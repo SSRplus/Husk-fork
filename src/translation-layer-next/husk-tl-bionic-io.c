@@ -130,6 +130,14 @@ static const char *synth_content(const char *path, char *buf, size_t n)
     return NULL;
 }
 
+/* The text of a made-up file, for a command (cat) that is asked to print it; false when the path is real. */
+bool tl_synth_text(const char *path, char *buf, size_t n)
+{
+    const char *t = synth_content(path, buf, n);
+    if (t && t != buf) snprintf(buf, n, "%s", t);
+    return t != NULL;
+}
+
 /* A file for a path whose contents are made up (/proc/cpuinfo ...), or -1 when the path is real. */
 int tl_synth_open(const char *path)
 {
@@ -1096,6 +1104,46 @@ static bool phone_jit(void)
     return on;
 #endif
 }
+
+/*
+ * Guests that assume 4 KiB pages (Adobe AIR's heap commits and decommits 4 KiB blocks with mmap(MAP_FIXED)) on a phone whose pages
+ * are 16 KiB: Darwin refuses a MAP_FIXED address that is not page-aligned (EINVAL), and rounds a range out to whole pages, which would
+ * trample the neighbouring blocks. These helpers carry such a request out on the pages it covers entirely, and treat the partial pages
+ * at either end the way a 4 KiB-page kernel would have left them: a commit makes them accessible and zeroes just the asked bytes, a
+ * decommit leaves them alone (the neighbouring block in the same page may be live).
+ */
+#define TL_HP ((uintptr_t)16384)
+static bool hp_ragged(uintptr_t a, size_t l) { return ((a | (a + l)) & (TL_HP - 1)) != 0; }
+
+/* the partial page(s) at an edge of a ragged range: [a, b) lies inside the pages it touches */
+static int hp_edge(uintptr_t a, uintptr_t b, int prot)
+{
+    if (a >= b || prot == 0) return 0;                       /* a decommit leaves a shared page as it is */
+    uintptr_t pa = a & ~(TL_HP - 1), pb = (b + TL_HP - 1) & ~(TL_HP - 1);
+    if (mprotect((void *)pa, pb - pa, PROT_READ | PROT_WRITE) != 0) {
+        /* not mapped yet: take the page(s) fresh */
+        if (mmap((void *)pa, pb - pa, PROT_READ | PROT_WRITE, MAP_FIXED | MAP_PRIVATE | MAP_ANON, -1, 0) == MAP_FAILED) return -1;
+    }
+    memset((void *)a, 0, b - a);                             /* what a fresh page would hold */
+    if ((prot & (PROT_READ | PROT_WRITE)) != (PROT_READ | PROT_WRITE)) mprotect((void *)pa, pb - pa, prot);
+    return 0;
+}
+
+/* mmap(addr, len, prot, MAP_FIXED|MAP_ANON) where addr or addr+len is not 16 KiB-aligned. Returns addr, or MAP_FAILED with errno set. */
+static void *hp_mmap_fixed_anon(void *addr, size_t len, int prot)
+{
+    uintptr_t s = (uintptr_t)addr, e = s + len;
+    uintptr_t is = (s + TL_HP - 1) & ~(TL_HP - 1), ie = e & ~(TL_HP - 1);
+    if (is < ie) {
+        void *r = mmap((void *)is, ie - is, prot, MAP_FIXED | MAP_PRIVATE | MAP_ANON, -1, 0);
+        if (r == MAP_FAILED) return MAP_FAILED;
+        anon_add(r, ie - is);
+        if (hp_edge(s, is, prot) || hp_edge(ie, e, prot)) return MAP_FAILED;
+    } else if (hp_edge(s, e, prot)) return MAP_FAILED;       /* inside a page or across one boundary: no whole page to remap */
+    static int said;
+    if (said++ < 4) tl_log_line("mm: MAP_FIXED %p+%#zx (prot %d) is not 16 KiB-aligned: done on the whole pages it covers", addr, len, prot);
+    return addr;
+}
 static void *b_mmap(void *addr, size_t len, int prot, int flags, int fd, long off)
 {
     /* A hooking library's trampolines (Geode): executable memory is a piece of the JIT region, written through the other view. */
@@ -1123,6 +1171,14 @@ static void *b_mmap(void *addr, size_t len, int prot, int flags, int fd, long of
             return rx;
         }
     }
+    if ((flags & 0x10) && (flags & 0x20) && len && hp_ragged((uintptr_t)addr, len)) {
+        TL_ERRNO_BEGIN();
+        void *hr = hp_mmap_fixed_anon(addr, len, prot_filter(prot, "mmap"));
+        TL_ERRNO_END();
+        mm_trace("mmap-ragged", hr, len, prot, flags);
+        if (hr == MAP_FAILED) tl_log_line("mm: mmap FAILED (ragged) addr=%p len=%#zx prot=%d flags=%#x errno=%d", addr, len, prot, flags, errno);
+        return hr;
+    }
     int df = flags & 0x3;                                   /* MAP_SHARED / MAP_PRIVATE */
     if (flags & 0x10)   df |= MAP_FIXED;
     if (flags & 0x20)   df |= MAP_ANON;
@@ -1147,12 +1203,17 @@ static void *b_mmap(void *addr, size_t len, int prot, int flags, int fd, long of
     }
     if (r != MAP_FAILED && (flags & 0x20)) anon_add(r, len);
     mm_trace("mmap", r, len, prot, flags);
-    if (r == MAP_FAILED) tl_log_line("mm: mmap FAILED len=%#zx prot=%d flags=%#x errno=%d", len, prot, flags, errno);
+    if (r == MAP_FAILED) tl_log_line("mm: mmap FAILED addr=%p len=%#zx prot=%d flags=%#x errno=%d", addr, len, prot, flags, errno);
     return r;
 }
 static int b_munmap(void *a, size_t l)
 {
     if (tl_xmem_contains(a)) return 0;                       /* JIT memory handed out above: kept, as the region only grows */
+    if (hp_ragged((uintptr_t)a, l)) {                        /* a 4 KiB-block guest: give back only the whole pages inside the range */
+        uintptr_t is = ((uintptr_t)a + TL_HP - 1) & ~(TL_HP - 1), ie = ((uintptr_t)a + l) & ~(TL_HP - 1);
+        if (is >= ie) return 0;
+        a = (void *)is; l = ie - is;
+    }
     size_t real = phantom_clamp((uintptr_t)a, l);
     if (real == 0) return 0;                                 /* the half of a phantom range that was never mapped */
     TL_ERRNO_BEGIN(); int r = munmap(a, real); TL_ERRNO_END(); mm_trace("munmap", a, real, r, errno); return r;
@@ -1218,11 +1279,21 @@ static int b_mprotect(void *a, size_t l, int prot)
         mm_trace("mprotect", a, l, prot, 0);
         return 0;
     }
+    if (hp_ragged((uintptr_t)a, l) && l) {                  /* a 4 KiB-block guest: widen an opening to the pages it touches; a closing keeps the pages it covers whole */
+        uintptr_t s0 = (uintptr_t)a, e0 = s0 + l;
+        if (prot == 0) { s0 = (s0 + TL_HP - 1) & ~(TL_HP - 1); e0 &= ~(TL_HP - 1); if (s0 >= e0) { mm_trace("mprotect", a, l, prot, 0); return 0; } }
+        else { s0 &= ~(TL_HP - 1); e0 = (e0 + TL_HP - 1) & ~(TL_HP - 1); }
+        a = (void *)s0; l = e0 - s0;
+    }
     TL_ERRNO_BEGIN(); int r = mprotect(a, l, prot_filter(prot, "mprotect")); int e = errno; TL_ERRNO_END(); mm_trace("mprotect", a, l, prot, r ? e : 0); return r; }
 static int b_madvise(void *a, size_t l, int adv)
 {
     mm_trace("madvise", a, l, adv, 0);
-    if (adv == 4) { anon_zap((uintptr_t)a, l); return 0; }  /* MADV_DONTNEED: zero-fill on next touch */
+    if (adv == 4) {                                          /* only whole pages are thrown away: the rest of a ragged range shares a page with live data */
+        uintptr_t is = ((uintptr_t)a + TL_HP - 1) & ~(TL_HP - 1), ie = ((uintptr_t)a + l) & ~(TL_HP - 1);
+        if (is < ie) anon_zap(is, ie - is);
+        return 0;
+    }  /* MADV_DONTNEED: zero-fill on next touch */
     return 0;                                                /* the rest are hints */
 }
 static void *b_mremap(void *old, size_t olds, size_t news, int flags, void *newaddr)

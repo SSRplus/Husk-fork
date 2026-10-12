@@ -650,6 +650,18 @@ static bool fake_command(char **argv, int argc, char *out, size_t n, int *code)
         return true;
     }
     if (!strcmp(prog, "echo")) { size_t o = 0; for (int i = 1; i < argc && o < n; i++) o += (size_t)snprintf(out + o, n - o, "%s%s", i > 1 ? " " : "", argv[i]); if (o < n - 1) { out[o] = '\n'; out[o + 1] = 0; } return true; }
+    /* cat <file>: Adobe AIR reads /proc/cpuinfo, /proc/meminfo and /sys/devices/system/cpu/present this way at start-up. Those are the files
+     * the guest's own open() gets made-up contents for, so the command prints the same text. */
+    if (!strcmp(prog, "cat") && argc >= 2) {
+        bool tl_synth_text(const char *path, char *buf, size_t n);
+        static char one[65536]; size_t o = 0; out[0] = 0;
+        for (int i = 1; i < argc; i++) {
+            if (argv[i][0] == '-') continue;
+            if (tl_synth_text(argv[i], one, sizeof(one))) { o += (size_t)snprintf(out + o, n - o, "%s", one); if (o >= n) { o = n - 1; break; } }
+            else { o += (size_t)snprintf(out + o, n - o, "cat: %s: No such file or directory\n", argv[i]); *code = 1; }   /* (stderr shares the text) */
+        }
+        return true;
+    }
     if (!strcmp(prog, "true")) return true;
     if (!strcmp(prog, "false")) { *code = 1; return true; }
     if (!strcmp(prog, "which") || !strcmp(prog, "su")) { *code = 1; return true; }        /* nothing found; not rooted */
