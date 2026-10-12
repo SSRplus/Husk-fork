@@ -1358,8 +1358,10 @@ static bool invoke_regs(dvm_method *caller, int kind, uint32_t midx, int count, 
         self = RL(regs, areg[ai++]);
         if (!self) return dvm_throw("java/lang/NullPointerException", "Attempt to invoke %s method '%s.%s%s' on a null object reference",
                                      kind == 4 ? "interface" : "virtual", r->cls->name, r->name, r->sig);
-        /* not an object at all (a bug elsewhere put something else in the register): say where, rather than crash on it */
-        if (self->kind > TL_K_OBJ_ARRAY || (self->kind != TL_K_CLASS && self->cls && (((uintptr_t)self->cls & 7) || (unsigned char)self->cls->name[0] <= 0x20 || (unsigned char)self->cls->name[0] >= 0x7f))) {
+        /* not an object at all (a bug elsewhere put something else in the register): say where, rather than crash on it.
+         * Bytes >= 0x80 are fine in a class name: obfuscated apps name classes with non-ASCII letters ("ī/íì/bi0"), which an
+         * earlier "printable ASCII only" test took for garbage and rejected a perfectly good object. */
+        if (self->kind > TL_K_OBJ_ARRAY || (self->kind != TL_K_CLASS && self->cls && (((uintptr_t)self->cls & 7) || (unsigned char)self->cls->name[0] <= 0x20 || (unsigned char)self->cls->name[0] == 0x7f))) {
             tl_log_line("dvm: register v%u of %s.%s holds %p, not an object (kind %u, class %p \"%.40s\"), for %s.%s%s", areg[0], caller->cls->name, caller->name,
                         (void *)self, self->kind, (void *)self->cls, self->cls && !((uintptr_t)self->cls & 7) ? self->cls->name : "?", r->cls->name, r->name, r->sig);
             return dvm_throw("java/lang/InternalError", "not an object in v%u for %s.%s", areg[0], r->cls->name, r->name);
@@ -2294,6 +2296,9 @@ bool tl_dvm_load_library(const char *name_or_path)
 bool tl_dvm_load_natives(const char *libdir)
 {
     tl_ld_add_search_dir(libdir);
+    /* On a phone bionic's libc carries the C++ unwinder; here it is a library of its own (scripts/build_art_support.sh), loaded
+     * before anything that throws so libc++, libssl and the apps' own libraries bind _Unwind_* to it instead of to logging stubs. */
+    if (!tl_ld_load("libunwind.so")) tl_log_line("dvm: no libunwind.so in the runtime: C++ exceptions in apps' libraries will not work");
     bool ok = tl_jni_load_library("libjavacore.so");
     ok = tl_jni_load_library("libopenjdk.so") && ok;
     /* core-icu4j's natives (charset converters, ICU's Java side), which ART loads with the runtime */
