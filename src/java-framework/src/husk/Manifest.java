@@ -146,8 +146,8 @@ public final class Manifest {
     public static Component activity(String cls) { read(); for (Component c : activities) if (c.name.equals(cls)) return c; return null; }
     public static Component launcher() {
         read();
-        for (Component c : activities) for (Filter f : c.filters) if (f.categories.contains("android.intent.category.LAUNCHER") && f.actions.contains("android.intent.action.MAIN")) return c;
-        for (Component c : activities) for (Filter f : c.filters) if (f.categories.contains("android.intent.category.LAUNCHER")) return c;
+        for (Component c : activities) if (c.enabled) for (Filter f : c.filters) if (f.categories.contains("android.intent.category.LAUNCHER") && f.actions.contains("android.intent.action.MAIN")) return c;
+        for (Component c : activities) if (c.enabled) for (Filter f : c.filters) if (f.categories.contains("android.intent.category.LAUNCHER")) return c;
         return activities.isEmpty() ? null : activities.get(0);
     }
     /** The services (or receivers) of this app an intent names or whose filters take it. */
