@@ -97,6 +97,16 @@ jobs:
           fi
           ls build
 
+      - name: Add the C++ unwinder to the Java runtime
+        # Husk loads libunwind.so before libc++; without it C++ exceptions in apps' native libraries
+        # (Adobe AIR games like Lost Life, libssl, ...) hit logging stubs. Built from the runner's NDK.
+        run: |
+          NDK="${ANDROID_NDK_LATEST_HOME:-${ANDROID_NDK_HOME:-}}"
+          if [ -d build/java-runtime/com.android.art/lib64 ] && [ -n "$NDK" ] && [ ! -f build/java-runtime/com.android.art/lib64/libunwind.so ]; then
+            ANDROID_NDK="$NDK" ./scripts/build_art_support.sh build/java-runtime/com.android.art/lib64
+          fi
+          ls build/java-runtime/com.android.art/lib64 2>/dev/null | grep -E "unwind|palette" || echo "(no libunwind in runtime)"
+
       - name: Build everything and package (ci_build.sh)
         id: build
         env:
