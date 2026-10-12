@@ -23,4 +23,11 @@ for l in libjavacrypto libcrypto libssl; do copy com.android.conscrypt/lib64/$l.
 cp "${HTTP_LEGACY:-/Volumes/GTAV/husk2/modules/jars/org.apache.http.legacy.jar}" "$OUT/org.apache.http.legacy.jar"
 # the platform's resources (themes, styles, layouts, drawables), from the same system image, without what an iPhone never picks
 python3 "$R/tools/strip_framework_res.py" "${FRAMEWORK_RES:-/Volumes/GTAV/husk2/aosp/fw/framework-res.apk}" "$OUT/framework-res.apk"
+# the C++ unwinder (libunwind.so), which Husk loads before libc++: without it every C++ throw in the app's libraries lands in a
+# logging stub. Needs an Android NDK r27+ (ANDROID_NDK); skipped, with a warning, when there is none.
+if [ -n "${ANDROID_NDK:-}" ]; then
+    "$R/scripts/build_art_support.sh" "$OUT/com.android.art/lib64"
+else
+    echo "warning: ANDROID_NDK not set: no libunwind.so in the runtime, C++ exceptions will not work" >&2
+fi
 du -sh "$OUT"
