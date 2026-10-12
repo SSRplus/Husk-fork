@@ -33,6 +33,22 @@ fetch () {
     ( cd "$GPU/$dir" && git checkout -q "$commit" )
 }
 
+# virglrenderer's meson build runs gallium's generators with the python3 on PATH, which must have PyYAML and Mako. Checked (and
+# installed if missing) here rather than left to a CI workflow, so a build fails with a clear message instead of
+# "python3 is missing modules: yaml" in the middle of meson setup.
+PY="$(command -v python3)"
+if ! "$PY" -c 'import yaml, mako' 2>/dev/null; then
+    echo "==> installing PyYAML and Mako for $PY"
+    "$PY" -m pip install --quiet --break-system-packages pyyaml mako 2>/dev/null \
+        || "$PY" -m pip install --quiet pyyaml mako 2>/dev/null \
+        || "$PY" -m pip install --quiet --user pyyaml mako 2>/dev/null \
+        || { command -v brew >/dev/null && brew install --quiet pyyaml; } || true
+fi
+if ! "$PY" -c 'import yaml, mako' 2>/dev/null; then
+    echo "error: $PY cannot import yaml and mako; install them with: $PY -m pip install pyyaml mako" >&2
+    exit 1
+fi
+
 fetch epoxy https://github.com/utmapp/libepoxy.git   "$EPOXY_COMMIT"
 fetch virgl https://github.com/utmapp/virglrenderer.git "$VIRGL_COMMIT"
 
