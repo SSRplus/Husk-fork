@@ -203,7 +203,7 @@ static bool manifest_launcher_activity(const char *apk, const char *package, cha
     const uint8_t *data; size_t len; bool owned = false;
     if (e && tl_zip_data(&z, e, 8u << 20, &data, &len, &owned, err, sizeof(err)) && len > 8 && rd16(data) == 0x0003) {
         const uint8_t *pool = NULL; size_t pool_size = 0;
-        char activity[200] = "";
+        char activity[200] = ""; bool act_enabled = true;
         for (size_t off = rd16(data + 2); off + 8 <= len && !ok; ) {
             uint16_t type = rd16(data + off); uint32_t size = rd32(data + off + 4);
             if (size < 8 || off + size > len) break;
@@ -218,10 +218,12 @@ static bool manifest_launcher_activity(const char *apk, const char *package, cha
                     for (unsigned i = 0; i < acount; i++) {
                         const uint8_t *at = el + 16 + astart + (size_t)i * asize;
                         char an[64] = "", av[200] = "";
-                        if (!pool_string(pool, pool_size, rd32(at + 4), an, sizeof(an)) || strcmp(an, "name")) continue;
+                        if (!pool_string(pool, pool_size, rd32(at + 4), an, sizeof(an))) continue;
+                        if (!strcmp(name, "activity") && !strcmp(an, "enabled") && at[15] == 0x12 && rd32(at + 16) == 0) act_enabled = false;
+                        if (strcmp(an, "name")) continue;
                         if (rd32(at + 8) != 0xFFFFFFFFu) pool_string(pool, pool_size, rd32(at + 8), av, sizeof(av));
-                        if (!strcmp(name, "activity")) snprintf(activity, sizeof(activity), "%s", av);
-                        else if (!strcmp(name, "category") && !strcmp(av, "android.intent.category.LAUNCHER") && activity[0]) ok = true;
+                        if (!strcmp(name, "activity")) { snprintf(activity, sizeof(activity), "%s", av); act_enabled = true; }
+                        else if (!strcmp(name, "category") && !strcmp(av, "android.intent.category.LAUNCHER") && activity[0] && act_enabled) ok = true;
                     }
                 }
             }

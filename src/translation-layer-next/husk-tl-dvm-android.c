@@ -1011,6 +1011,7 @@ bool tl_javaapp_manifest(const char *apk, char *pkg, size_t pn, char *activity, 
     const tl_zip_entry *e = tl_zip_find(&z, "AndroidManifest.xml");
     const uint8_t *d; size_t len; bool owned = false;
     char act[260] = "", found[260] = "", app[260] = "";
+    bool act_enabled = true;
     if (application && apn) application[0] = 0;
     if (e && tl_zip_data(&z, e, 8u << 20, &d, &len, &owned, err, sizeof(err)) && len > 8 && rd16le(d) == 0x0003) {
         const uint8_t *pool = NULL; size_t psz = 0;
@@ -1025,6 +1026,7 @@ bool tl_javaapp_manifest(const char *apk, char *pkg, size_t pn, char *activity, 
                 char name[64] = "";
                 pool_str(pool, psz, rd32le(el + 20), name, sizeof(name));
                 uint16_t astart = rd16le(el + 24), asize = rd16le(el + 26), acount = rd16le(el + 28);
+                if (!strcmp(name, "activity") || !strcmp(name, "activity-alias")) act_enabled = true;
                 for (unsigned i = 0; i < acount; i++) {
                     const uint8_t *at = el + 16 + astart + (size_t)i * asize;
                     char an2[64] = "", av[260] = "";
@@ -1034,13 +1036,16 @@ bool tl_javaapp_manifest(const char *apk, char *pkg, size_t pn, char *activity, 
                     if (!an2[0] && resmap && ni < nres) {
                         uint32_t id = rd32le(resmap + 4 * ni);
                         if (id == 0x01010003) snprintf(an2, sizeof(an2), "name"); else if (id == 0x01010202) snprintf(an2, sizeof(an2), "targetActivity");
+                        else if (id == 0x0101000e) snprintf(an2, sizeof(an2), "enabled");
                     }
+                    /* android:enabled="false": a disabled activity can not be launched (Unity 6 ships UnityPlayerActivity disabled beside the enabled UnityPlayerGameActivity) */
+                    if ((!strcmp(name, "activity") || !strcmp(name, "activity-alias")) && !strcmp(an2, "enabled") && at[15] == 0x12 && rd32le(at + 16) == 0) act_enabled = false;
                     if (rd32le(at + 8) != 0xFFFFFFFFu) pool_str(pool, psz, rd32le(at + 8), av, sizeof(av));
                     if (!strcmp(name, "manifest") && !strcmp(an2, "package")) snprintf(pkg, pn, "%s", av);
                     if (!strcmp(name, "application") && !strcmp(an2, "name")) snprintf(app, sizeof(app), "%s", av);
                     if ((!strcmp(name, "activity") || !strcmp(name, "activity-alias")) && !strcmp(an2, "name")) snprintf(act, sizeof(act), "%s", av);
                     if (!strcmp(name, "activity-alias") && !strcmp(an2, "targetActivity")) snprintf(act, sizeof(act), "%s", av);
-                    if (!strcmp(name, "category") && !strcmp(an2, "name") && !strcmp(av, "android.intent.category.LAUNCHER") && act[0] && !found[0]) snprintf(found, sizeof(found), "%s", act);
+                    if (!strcmp(name, "category") && !strcmp(an2, "name") && !strcmp(av, "android.intent.category.LAUNCHER") && act[0] && act_enabled && !found[0]) snprintf(found, sizeof(found), "%s", act);
                 }
             }
             off += size;
