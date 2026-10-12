@@ -240,7 +240,9 @@ struct AppStoppedOverlay: View {
                 AppDiagnosisCard(diagnosis: diagnosis, showsEvidence: true)
                 HStack(spacing: 10) {
                     if let report {
-                        ShareLink(item: report) { Label("Share Report", systemImage: "square.and.arrow.up").frame(maxWidth: .infinity) }
+                        // Not ShareLink: inside this overlay (over the app's own screen, not a sheet) SwiftUI's share sheet
+                        // never appears. Present UIKit's from the topmost view controller instead.
+                        Button { HuskShare.present(report) } label: { Label("Share Report", systemImage: "square.and.arrow.up").frame(maxWidth: .infinity) }
                             .buttonStyle(.bordered)
                     }
                     Button(action: close) { Text("Close").frame(maxWidth: .infinity) }
@@ -286,5 +288,24 @@ extension AppDiagnosis {
         guard let c = husk_tl_attempt_log() else { return nil }
         defer { free(c) }
         return fromLog(String(cString: c))
+    }
+}
+
+
+/// The system share sheet, from whatever is on top. `ShareLink` silently does nothing when its button sits in an overlay
+/// rather than a sheet (the report shown over a stopped app), so reports are shared through UIKit directly.
+enum HuskShare {
+    @MainActor static func present(_ url: URL) {
+        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+        let scene = scenes.first { $0.activationState == .foregroundActive } ?? scenes.first
+        let window = scene?.windows.first { $0.isKeyWindow } ?? scene?.windows.first
+        guard var top = window?.rootViewController else { return }
+        while let p = top.presentedViewController { top = p }
+        let sheet = UIActivityViewController(activityItems: [url], applicationActivities: nil)
+        // iPad: a share sheet is a popover and crashes without an anchor.
+        sheet.popoverPresentationController?.sourceView = top.view
+        sheet.popoverPresentationController?.sourceRect = CGRect(x: top.view.bounds.midX, y: top.view.bounds.midY, width: 1, height: 1)
+        sheet.popoverPresentationController?.permittedArrowDirections = []
+        top.present(sheet, animated: true)
     }
 }
