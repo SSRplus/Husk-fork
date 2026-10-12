@@ -511,7 +511,11 @@ static void w_glSampleCoverage(float v, unsigned i) { r_glSampleCoverage(v, i & 
  * its queries never report a result on Metal, and an engine that times its GPU work (bgfx, so Minecraft) waits for the
  * result forever. Taken out of the extension lists, the engine never asks.
  */
-static const char *const k_hidden_ext[] = { "GL_EXT_disjoint_timer_query", "GL_EXT_disjoint_timer_query_webgl2", NULL };
+/* GL_EXT_multisampled_render_to_texture(2): Unity's mobile MSAA path (URP 2D in Silksong) renders into an implicitly resolved texture; on ANGLE's Metal back end that
+ * implicit resolve does not keep what was drawn, so a layer of an earlier pass shows through later ones and follows the camera. Without the extension Unity uses an
+ * explicit multisampled renderbuffer and glBlitFramebuffer, which ANGLE handles correctly. */
+static const char *const k_hidden_ext[] = { "GL_EXT_disjoint_timer_query", "GL_EXT_disjoint_timer_query_webgl2",
+    "GL_EXT_multisampled_render_to_texture", "GL_EXT_multisampled_render_to_texture2", NULL };
 static bool ext_hidden(const char *name, size_t n)
 {
     for (int i = 0; k_hidden_ext[i]; i++) if (strlen(k_hidden_ext[i]) == n && !strncmp(k_hidden_ext[i], name, n)) return true;

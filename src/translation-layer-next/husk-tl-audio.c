@@ -79,40 +79,51 @@ static void sleep_for(int frames, int rate)
 static void ring_write(const int16_t *samples, int frames, int channels, int rate);
 
 /*
- * The mixer's write. A game mixing at a low rate (Unity's FMOD runs at 24 kHz) is played at twice that: each frame, then the
- * point halfway to the next. The iPhone played Subway Surfers' 24 kHz output high-pitched and broken while the same samples
- * were right on a Mac, and every game that sounds right there runs at 44.1 or 48 kHz -- so the queue is only ever opened
- * at one of those.
+ * The mixer's write, from any engine and any thread: whatever rate and channel count it plays at, the host queue is opened once at 48 kHz stereo and every
+ * write is converted to that here -- channels first (mono is doubled, more than two keep the front pair), then a linear-interpolation resampler that keeps
+ * its position and last sample between calls, so there is no click at a block boundary. Before this the queue took the rate of whichever write came first and
+ * played every later one at that rate (a 24 kHz Unity/FMOD mix, a 44.1 kHz video soundtrack and a 48 kHz AAudio stream could not all be right), which is the
+ * high, fast voices of Silksong.
  */
+#define OUT_RATE 48000
 static void host_write(const int16_t *samples, int frames, int channels, int rate)
 {
-    if (rate > 0 && rate * 2 <= 48000 && channels > 0 && channels <= 2 && frames > 0) {
-        static int16_t prev[2];
-        static bool have_prev;
-        int16_t *up = malloc((size_t)frames * 2 * (size_t)channels * sizeof(int16_t));
-        if (up) {
-            for (int f = 0; f < frames; f++)
-                for (int c = 0; c < channels; c++) {
-                    int16_t cur = samples[(size_t)f * channels + c];
-                    int16_t before = f > 0 ? samples[(size_t)(f - 1) * channels + c] : (have_prev ? prev[c] : cur);
-                    up[(size_t)(2 * f) * channels + c] = (int16_t)(((int)before + cur) / 2);
-                    up[(size_t)(2 * f + 1) * channels + c] = cur;
-                }
-            for (int c = 0; c < channels; c++) prev[c] = samples[(size_t)(frames - 1) * channels + c];
-            have_prev = true;
-            ring_write(up, frames * 2, channels, rate * 2);
-            free(up);
-            return;
+    if (!samples || frames <= 0 || channels <= 0) return;
+    if (rate < 4000 || rate > 192000) rate = OUT_RATE;
+    if (rate == OUT_RATE && channels == 2) { ring_write(samples, frames, 2, OUT_RATE); return; }
+    static __thread double pos;                    /* where the next output frame falls in the source: -1 is the previous block's last frame */
+    static __thread int16_t prev[2];
+    static __thread int last_rate;
+    if (last_rate != rate) { last_rate = rate; pos = 0; prev[0] = samples[0]; prev[1] = channels > 1 ? samples[1] : samples[0]; }
+    const double step = (double)rate / OUT_RATE;
+    size_t cap = (size_t)((double)frames / step) + 8, n = 0;
+    int16_t *out = malloc(cap * 2 * sizeof(int16_t));
+    if (!out) return;
+#define SRC(i, c) ((i) < 0 ? prev[c] : samples[(size_t)(i) * (size_t)channels + ((c) < channels ? (size_t)(c) : 0)])
+    while (n < cap) {
+        long i = (long)pos; if (pos < 0 && (double)i != pos) i--;      /* floor */
+        if (i + 1 >= frames) break;
+        double f = pos - (double)i;
+        for (int c = 0; c < 2; c++) {
+            double a = SRC(i, c), b = SRC(i + 1, c);
+            out[n * 2 + (size_t)c] = (int16_t)(a + (b - a) * f);
         }
+        n++;
+        pos += step;
     }
-    ring_write(samples, frames, channels, rate);
+#undef SRC
+    pos -= frames;
+    prev[0] = samples[(size_t)(frames - 1) * (size_t)channels];
+    prev[1] = channels > 1 ? samples[(size_t)(frames - 1) * (size_t)channels + 1] : prev[0];
+    if (n) ring_write(out, (int)n, 2, OUT_RATE);
+    free(out);
 }
 
 /* Copy into the ring, blocking while it is full (that is the pacing). */
 static void ring_write(const int16_t *samples, int frames, int channels, int rate)
 {
     pthread_mutex_lock(&A.mu);
-    if (!A.q && !A.failed) { if (!open_queue(rate, channels)) A.failed = true; }
+    if (!A.q && !A.failed) { if (!open_queue(OUT_RATE, 2)) A.failed = true; }
     if (A.failed || channels != A.channels) { pthread_mutex_unlock(&A.mu); sleep_for(frames, rate); return; }
     int done = 0;
     while (done < frames) {
