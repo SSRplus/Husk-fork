@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 import SwiftUI
 import UIKit
+import os
 import QuartzCore
 import AVFoundation
 
@@ -191,9 +192,31 @@ final class TLUnityUIView: UIView, UIKeyInput {
 
     deinit { statsTimer?.invalidate(); NotificationCenter.default.removeObserver(self) }
 
+    private var lastPerfLog = Date.distantPast
+
+    /// One line in husk.log every five seconds: the frame rate next to what the device is doing about it. A game that runs at 30 fps one launch and 10-20 the next
+    /// has so far left a log with nothing in it to tell a throttled chip from a starved process from a slow guest.
+    private func logPerf(fps: Double, meanMs: Double) {
+        let now = Date()
+        guard now.timeIntervalSince(lastPerfLog) >= 5 else { return }
+        lastPerfLog = now
+        var ru = rusage(); getrusage(RUSAGE_SELF, &ru)
+        let cpu = Double(ru.ru_utime.tv_sec + ru.ru_stime.tv_sec) + Double(ru.ru_utime.tv_usec + ru.ru_stime.tv_usec) / 1e6
+        let wall = ProcessInfo.processInfo.systemUptime
+        let dCpu = cpu - perfPrevCpu, dWall = wall - perfPrevWall
+        perfPrevCpu = cpu; perfPrevWall = wall
+        let thermal = ["nominal", "fair", "serious", "critical"][min(3, ProcessInfo.processInfo.thermalState.rawValue)]
+        HuskLog.log("perf", String(format: "%.0f fps, %.1f ms; process cpu %.0f%% of one core; thermal %@; low power %@; %d MiB left before jetsam",
+                                   fps, meanMs, dWall > 0 ? 100 * dCpu / dWall : 0, thermal,
+                                   ProcessInfo.processInfo.isLowPowerModeEnabled ? "on" : "off",
+                                   Int(os_proc_available_memory() / (1 << 20))))
+    }
+    private var perfPrevCpu = 0.0, perfPrevWall = 0.0
+
     private func updateStats() {
         var p = husk_unity_perf()
         husk_unity_perf_snapshot(&p)
+        if p.fps > 0 { logPerf(fps: p.fps, meanMs: p.mean_ms) }
         let text = p.fps > 0
             ? String(format: "%.0f fps · %.1f ms · max %.0f", p.fps, p.mean_ms, p.max_ms)
             : "starting"

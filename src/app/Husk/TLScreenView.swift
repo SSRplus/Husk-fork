@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 import SwiftUI
 import UIKit
+import os
 
 /// The translation layer's screen, shown the way a game needs to be shown.
 ///
@@ -165,7 +166,23 @@ final class TLScreenUIView: UIView {
         stats.text = pf.fps > 0
             ? String(format: "%.0f fps · %.1f ms", shownFps, pf.logic_ms + pf.render_ms)
             : String(format: "%.0f fps", shownFps)
+
+        // one line in husk.log every five seconds: the frame rate next to what the device is doing about it (a throttled chip, a starved process or a slow guest
+        // look the same from the frame counter alone)
+        if now - perfLogged >= 5 {
+            perfLogged = now
+            var ru = rusage(); getrusage(RUSAGE_SELF, &ru)
+            let cpu = Double(ru.ru_utime.tv_sec + ru.ru_stime.tv_sec) + Double(ru.ru_utime.tv_usec + ru.ru_stime.tv_usec) / 1e6
+            let wall = ProcessInfo.processInfo.systemUptime
+            let dCpu = cpu - perfPrevCpu, dWall = wall - perfPrevWall
+            perfPrevCpu = cpu; perfPrevWall = wall
+            let thermal = ["nominal", "fair", "serious", "critical"][min(3, ProcessInfo.processInfo.thermalState.rawValue)]
+            HuskLog.log("perf", String(format: "shown %.0f fps, game %.0f fps (logic %.1f ms, render %.1f ms); process cpu %.0f%% of one core; thermal %@; low power %@; %d MiB left before jetsam",
+                                       shownFps, pf.fps, pf.logic_ms, pf.render_ms, dWall > 0 ? 100 * dCpu / dWall : 0, thermal,
+                                       ProcessInfo.processInfo.isLowPowerModeEnabled ? "on" : "off", Int(os_proc_available_memory() / (1 << 20))))
+        }
     }
+    private var perfLogged = 0.0, perfPrevCpu = 0.0, perfPrevWall = 0.0
 
     // MARK: touch
 
