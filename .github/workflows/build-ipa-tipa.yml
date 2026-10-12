@@ -1,0 +1,171 @@
+name: Build Husk IPA + TIPA
+
+# Builds Husk 2.0 from a clean checkout (scripts/ci_build.sh) and produces:
+#   Husk-<version>.ipa   for SideStore / AltStore / other sideloaders (re-signed at install)
+#   Husk-<version>.tipa  for TrollStore (banned entitlements stripped by package_ipa.sh --trollstore)
+#
+# First run is slow (QEMU + ANGLE + MoltenVK + Rust, "a couple of hours"). Intermediate
+# results live in build/ and third_party/ and are cached, so later runs reuse them.
+# If a run hits the time limit, the cache is still saved: just re-run and it resumes.
+
+on:
+  workflow_dispatch:
+    inputs:
+      release:
+        description: "Publish a GitHub Release with the IPA + TIPA"
+        type: boolean
+        default: false
+      clean_cache:
+        description: "Ignore the build cache (full rebuild from scratch)"
+        type: boolean
+        default: false
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write   # needed only for the release step
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  # Optional: URLs of tarballs holding the Java runtime / Android system parts, which need a
+  # LineageOS image (scripts/build_java_runtime.sh, build_android_system.sh) and so cannot be
+  # produced on a stock runner. Set as repository variables. Without them the app still builds
+  # and installs, but Java-only apps will not start (project.yml only warns).
+  JAVA_RUNTIME_URL: ${{ vars.JAVA_RUNTIME_URL }}       # tar.gz that unpacks to java-runtime/
+  ANDROID_SYSTEM_URL: ${{ vars.ANDROID_SYSTEM_URL }}   # tar.gz that unpacks to android-system/
+
+jobs:
+  build:
+    name: Build IPA + TIPA
+    runs-on: macos-26            # arm64 runner with Xcode 26 (the JIT helper targets iOS 26)
+    timeout-minutes: 355         # GitHub's hard limit is 360
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Show toolchain
+        run: |
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+          sw_vers
+
+      - name: Install build tools
+        run: |
+          brew update --quiet
+          # qemu provides qemu-img (used to create the guest disk seeds);
+          # meson/ninja are expected at /opt/homebrew/bin by build_gpu_ios.sh.
+          brew install --quiet meson ninja pkg-config xcodegen qemu cmake \
+                       autoconf automake libtool gettext python@3 coreutils
+          rustup target add aarch64-apple-ios
+          meson --version; ninja --version; xcodegen --version; qemu-img --version | head -1
+          ls -l /opt/homebrew/bin/meson /opt/homebrew/bin/ninja
+
+      - name: Restore build cache
+        if: ${{ !inputs.clean_cache }}
+        id: cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            build
+            third_party
+            guests
+            src/rppairing-ios/target
+          key: husk-build-${{ runner.os }}-${{ hashFiles('scripts/**', 'patches/**', 'src/rppairing-ios/Cargo.lock') }}
+          restore-keys: |
+            husk-build-${{ runner.os }}-
+
+      - name: Fetch optional Java runtime / Android system parts
+        run: |
+          mkdir -p build
+          if [ -n "$JAVA_RUNTIME_URL" ] && [ ! -f build/java-runtime/husk-framework.dex ]; then
+            echo "==> java-runtime"
+            curl -fL --retry 3 "$JAVA_RUNTIME_URL" | tar -xz -C build
+          fi
+          if [ -n "$ANDROID_SYSTEM_URL" ] && [ ! -d build/android-system/fonts ]; then
+            echo "==> android-system"
+            curl -fL --retry 3 "$ANDROID_SYSTEM_URL" | tar -xz -C build
+          fi
+          ls build
+
+      - name: Build everything and package (ci_build.sh)
+        id: build
+        env:
+          SDKMINVER: "15.5"
+        run: |
+          # Stop a little before the job limit so the cache step below can still run.
+          gtimeout 330m ./scripts/ci_build.sh build/Husk.ipa
+
+      - name: Save build cache
+        # Runs even on failure/timeout so a re-run resumes instead of starting over.
+        if: ${{ always() && !inputs.clean_cache && steps.cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            build
+            third_party
+            guests
+            src/rppairing-ios/target
+          key: husk-build-${{ runner.os }}-${{ hashFiles('scripts/**', 'patches/**', 'src/rppairing-ios/Cargo.lock') }}-${{ github.run_id }}
+
+      - name: Verify outputs
+        run: |
+          ls -lh build/Husk.ipa build/Husk.tipa
+          for f in build/Husk.ipa build/Husk.tipa; do
+            unzip -tq "$f"
+            unzip -l "$f" | grep -E "Payload/Husk.app/(Info.plist|Husk)$"
+          done
+
+      - name: Name artifacts with version
+        id: ver
+        run: |
+          V=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" src/app/Husk/Info.plist)
+          B=$(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" src/app/Husk/Info.plist)
+          mkdir -p dist
+          cp build/Husk.ipa  "dist/Husk-$V.ipa"
+          cp build/Husk.tipa "dist/Husk-$V.tipa"
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "build=$B"   >> "$GITHUB_OUTPUT"
+          ls -lh dist
+
+      - name: Upload IPA + TIPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: Husk-${{ steps.ver.outputs.version }}-ipa-tipa
+          path: dist/*
+          if-no-files-found: error
+          compression-level: 0      # already zip files
+
+      - name: Upload build log (on failure)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs
+          path: |
+            build/logs/*.log
+            /tmp/husk_ipa/build.log
+          if-no-files-found: ignore
+
+      - name: Publish release
+        if: ${{ startsWith(github.ref, 'refs/tags/v') || inputs.release }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || format('v{0}', steps.ver.outputs.version) }}
+          name: Husk ${{ steps.ver.outputs.version }}
+          files: |
+            dist/Husk-${{ steps.ver.outputs.version }}.ipa
+            dist/Husk-${{ steps.ver.outputs.version }}.tipa
+          body: |
+            Husk ${{ steps.ver.outputs.version }} (build ${{ steps.ver.outputs.build }})
+
+            - `.ipa` — SideStore / AltStore / other sideloaders
+            - `.tipa` — TrollStore
