@@ -19,6 +19,7 @@
 
 #include <errno.h>
 #include <pthread.h>
+#include <pthread/qos.h>
 #include <sched.h>
 #include <semaphore.h>
 #include <signal.h>
@@ -455,6 +456,10 @@ static int b_create(pthread_t *out, const guest_attr *attr, void *(*fn)(void *),
     if (stack < (16u << 20)) stack = 16u << 20;
     stack = (stack + 16383) & ~(size_t)16383;
     pthread_attr_setstacksize(&a, stack);
+    /* A guest thread inherits the QoS of the thread that made it, and which that is differs from one launch to the next (a game started from a background
+     * queue, a relaunch that resumes it): on a two-big-two-little chip a game thread that lands at a low class is run on the efficiency cores, which is a
+     * game at 30 fps one launch and 10-20 the next. Android has no such classes and its threads are all ordinary foreground ones, so every one gets the top class. */
+    pthread_attr_set_qos_class_np(&a, QOS_CLASS_USER_INTERACTIVE, 0);
     if (attr && (attr->flags & GATTR_DETACHED)) pthread_attr_setdetachstate(&a, PTHREAD_CREATE_DETACHED);
     start_ctx *c = malloc(sizeof(*c));
     c->fn = fn; c->arg = arg;

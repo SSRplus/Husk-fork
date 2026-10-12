@@ -5,6 +5,7 @@
 #include <dlfcn.h>
 #include <fcntl.h>
 #include <pthread.h>
+#include <pthread/qos.h>
 #include <signal.h>
 #include <stdatomic.h>
 #include <stdio.h>
@@ -341,7 +342,7 @@ static void *launch_thread(void *arg)
         tl_log_line("java: starting %s as %s, %dx%d (runtime %s)", A.apk, A.package, A.width, A.height, g_java_root);
         ok = false;
         if (g_java_root[0]) {
-            pthread_attr_t at; pthread_attr_init(&at); pthread_attr_setstacksize(&at, 64u << 20);
+            pthread_attr_t at; pthread_attr_init(&at); pthread_attr_setstacksize(&at, 64u << 20); pthread_attr_set_qos_class_np(&at, QOS_CLASS_USER_INTERACTIVE, 0);
             pthread_t t;
             if (pthread_create(&t, &at, java_boot, &ok) == 0) pthread_join(t, NULL);
             pthread_attr_destroy(&at);
@@ -436,6 +437,7 @@ static bool launch(int engine, const char *apk, const char *data_dir, void *meta
     pthread_attr_t at;
     pthread_attr_init(&at);
     pthread_attr_setstacksize(&at, 4u << 20);
+    pthread_attr_set_qos_class_np(&at, QOS_CLASS_USER_INTERACTIVE, 0);
     pthread_attr_setdetachstate(&at, PTHREAD_CREATE_DETACHED);
     pthread_t t;
     int rc = pthread_create(&t, &at, launch_thread, NULL);
