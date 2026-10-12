@@ -67,6 +67,12 @@ jobs:
           brew install --quiet meson ninja pkg-config xcodegen qemu cmake \
                        autoconf automake libtool gettext python@3 coreutils
           rustup target add aarch64-apple-ios
+          # virglrenderer's meson build runs gallium's generator with Homebrew's python3, which needs these modules
+          # (the first CI run died with "/opt/homebrew/bin/python3 is missing modules: yaml").
+          for py in /opt/homebrew/bin/python3 "$(command -v python3)"; do
+            "$py" -m pip install --quiet --break-system-packages pyyaml mako
+            "$py" -c "import yaml, mako; print('$py: python modules ok')"
+          done
           meson --version; ninja --version; xcodegen --version; qemu-img --version | head -1
           ls -l /opt/homebrew/bin/meson /opt/homebrew/bin/ninja
 
@@ -84,28 +90,81 @@ jobs:
           restore-keys: |
             husk-build-${{ runner.os }}-
 
-      - name: Fetch optional Java runtime / Android system parts
+      - name: Fetch the Java runtime and Android system parts
+        # These come from a LineageOS system image (scripts/build_java_runtime.sh, build_android_system.sh) and cannot be
+        # produced on a stock runner. Without them the IPA installs but every Java app dies with
+        # "dvm: core-oj.jar: cannot open ... no java/lang/Object on the boot class path". So they are taken from
+        # the project's own published release IPA (RUNTIME_SOURCE_IPA), or from your own tarballs
+        # (JAVA_RUNTIME_URL / ANDROID_SYSTEM_URL) when those repository variables are set.
+        env:
+          RUNTIME_SOURCE_IPA: ${{ vars.RUNTIME_SOURCE_IPA || 'https://github.com/Leviidev/Husk/releases/download/2.0/Husk.ipa' }}
         run: |
           mkdir -p build
-          if [ -n "$JAVA_RUNTIME_URL" ] && [ ! -f build/java-runtime/husk-framework.dex ]; then
-            echo "==> java-runtime"
+          have_rt() { [ -f build/java-runtime/com.android.art/javalib/core-oj.jar ]; }
+          have_sys() { [ -d build/android-system/fonts ] && [ -d build/android-system/cacerts ]; }
+          if [ -n "$JAVA_RUNTIME_URL" ] && ! have_rt; then
+            echo "==> java-runtime from JAVA_RUNTIME_URL"
             curl -fL --retry 3 "$JAVA_RUNTIME_URL" | tar -xz -C build
           fi
-          if [ -n "$ANDROID_SYSTEM_URL" ] && [ ! -d build/android-system/fonts ]; then
-            echo "==> android-system"
+          if [ -n "$ANDROID_SYSTEM_URL" ] && ! have_sys; then
+            echo "==> android-system from ANDROID_SYSTEM_URL"
             curl -fL --retry 3 "$ANDROID_SYSTEM_URL" | tar -xz -C build
           fi
-          ls build
+          if ! have_rt || ! have_sys; then
+            echo "==> java-runtime / android-system from $RUNTIME_SOURCE_IPA"
+            curl -fL --retry 3 -o "$RUNNER_TEMP/runtime-source.ipa" "$RUNTIME_SOURCE_IPA"
+            rm -rf "$RUNNER_TEMP/rt" && mkdir -p "$RUNNER_TEMP/rt"
+            unzip -q "$RUNNER_TEMP/runtime-source.ipa" 'Payload/*.app/java-runtime/*' 'Payload/*.app/android-system/*' -d "$RUNNER_TEMP/rt"
+            APP=$(ls -d "$RUNNER_TEMP"/rt/Payload/*.app)
+            have_rt  || { rm -rf build/java-runtime;   cp -R "$APP/java-runtime"   build/java-runtime; }
+            have_sys || { rm -rf build/android-system; cp -R "$APP/android-system" build/android-system; }
+            rm -rf "$RUNNER_TEMP/rt" "$RUNNER_TEMP/runtime-source.ipa"
+          fi
+          have_rt  || { echo "::error::build/java-runtime is incomplete"; exit 1; }
+          have_sys || { echo "::error::build/android-system is incomplete"; exit 1; }
+          du -sh build/java-runtime build/android-system
+
+      - name: Set up JDK for the Java framework
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Build Husk's Java framework from this source
+        # husk-framework.dex has to match the native runtime compiled from this checkout, so it is rebuilt here
+        # (javac --release 8 + R8, as src/java-framework/build.sh does) over the one in the release IPA.
+        # If R8 cannot be fetched the release's copy is kept, with a warning.
+        env:
+          R8_VERSION: "8.5.35"
+        run: |
+          set -e
+          R8="$RUNNER_TEMP/r8.jar"
+          for url in "https://maven.google.com/com/android/tools/r8/$R8_VERSION/r8-$R8_VERSION.jar" \
+                     "https://dl.google.com/dl/android/maven2/com/android/tools/r8/$R8_VERSION/r8-$R8_VERSION.jar"; do
+            curl -fL --retry 3 -o "$R8" "$url" && break || rm -f "$R8"
+          done
+          if [ ! -s "$R8" ]; then
+            echo "::warning::could not download R8 $R8_VERSION; keeping the release's husk-framework.dex"
+            exit 0
+          fi
+          HUSK_JDK="$JAVA_HOME" HUSK_D8="$R8" ./src/java-framework/build.sh "$RUNNER_TEMP/husk-framework.dex"
+          cp "$RUNNER_TEMP/husk-framework.dex" build/java-runtime/husk-framework.dex
+          ls -l build/java-runtime/husk-framework.dex
 
       - name: Add the C++ unwinder to the Java runtime
         # Husk loads libunwind.so before libc++; without it C++ exceptions in apps' native libraries
         # (Adobe AIR games like Lost Life, libssl, ...) hit logging stubs. Built from the runner's NDK.
         run: |
           NDK="${ANDROID_NDK_LATEST_HOME:-${ANDROID_NDK_HOME:-}}"
-          if [ -d build/java-runtime/com.android.art/lib64 ] && [ -n "$NDK" ] && [ ! -f build/java-runtime/com.android.art/lib64/libunwind.so ]; then
+          if [ -z "$NDK" ] || [ ! -d "$NDK" ]; then
+            echo "::error::no Android NDK on this runner (ANDROID_NDK_LATEST_HOME); needed for libunwind.so"
+            exit 1
+          fi
+          echo "NDK: $NDK"
+          if [ ! -f build/java-runtime/com.android.art/lib64/libunwind.so ]; then
             ANDROID_NDK="$NDK" ./scripts/build_art_support.sh build/java-runtime/com.android.art/lib64
           fi
-          ls build/java-runtime/com.android.art/lib64 2>/dev/null | grep -E "unwind|palette" || echo "(no libunwind in runtime)"
+          ls -l build/java-runtime/com.android.art/lib64/libunwind.so
 
       - name: Build everything and package (ci_build.sh)
         id: build
@@ -133,6 +192,11 @@ jobs:
           for f in build/Husk.ipa build/Husk.tipa; do
             unzip -tq "$f"
             unzip -l "$f" | grep -E "Payload/Husk.app/(Info.plist|Husk)$"
+            # an IPA without the Java runtime installs fine and then fails every Java app at launch
+            for need in java-runtime/com.android.art/javalib/core-oj.jar java-runtime/husk-framework.dex \
+                        java-runtime/com.android.art/lib64/libunwind.so android-system/cacerts android-system/fonts; do
+              unzip -l "$f" | grep -q "Payload/Husk.app/$need" || { echo "::error::$f is missing $need"; exit 1; }
+            done
           done
 
       - name: Name artifacts with version
