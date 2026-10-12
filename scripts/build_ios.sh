@@ -147,7 +147,7 @@ apply_patch() {
 stage_libffi()      { build_autotools libffi-3.5.0; }
 stage_glib()        { build_meson glib-2.83.0 "$CROSS_IOS" \
                         -Dtests=false -Dnls=disabled -Dintrospection=disabled \
-                        -Dselinux=disabled -Dlibmount=disabled -Ddtrace=disabled \
+                        -Dselinux=disabled -Dlibmount=disabled -Ddtrace=disabled -Dsysprof=disabled \
                         -Dman-pages=disabled -Dglib_debug=disabled -Dxattr=false; }
 stage_pixman()      { apply_patch pixman-0.38.0 pixman-0.38.0.patch
                       build_autotools pixman-0.38.0 --disable-gtk --disable-libpng --disable-arm-iwmmxt; }
