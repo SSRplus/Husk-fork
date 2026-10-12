@@ -920,10 +920,19 @@ static int x18_rewrite(tl_lib *L, uint32_t *site_rw, const uint8_t *pc, ptrdiff_
 #define EMIT(word) do { uint32_t w_ = (word); c[n++] = w_; } while (0)
 #define EMIT_B(to) do { uint32_t w_ = e_b(rx + n * 4, (to)); c[n++] = w_; } while (0)
 
-    if ((insn & 0x9F000000u) == 0x90000000u || (insn & 0x9F000000u) == 0x10000000u || (insn & 0xBF000000u) == 0x18000000u) {
+    /* `mrs x18, tpidr_el0` / `mrs x18, ctr_el0`: the compiler's stack-protector prologue on Android (`mrs x18, tpidr_el0; ldr x18, [x18, #0x28]`). patch_image
+     * turns these two reads into constants for every other register (the fake thread block's page, the cache type), but a site naming x18 comes here first and
+     * would run the real instruction inside the stub: Apple's tpidr_el0 is not the fake block, so the cookie load dereferenced garbage (fault 0x2d = 5 + 0x28). */
+    const bool mrs_tpidr = (insn & 0xFFFFFFFFu) == 0xD53BD052u, mrs_ctr = (insn & 0xFFFFFFFFu) == 0xD53B0032u;
+    if (mrs_tpidr || mrs_ctr ||
+        (insn & 0x9F000000u) == 0x90000000u || (insn & 0x9F000000u) == 0x10000000u || (insn & 0xBF000000u) == 0x18000000u) {
         /* pc-relative into x18: the value is a constant of the site, known now */
         uint64_t value;
-        if ((insn & 0x9F000000u) == 0x90000000u || (insn & 0x9F000000u) == 0x10000000u) {
+        if (mrs_tpidr) {
+            value = (uint64_t)((uintptr_t)G.tcb_rw & ~(uintptr_t)0xFFF);
+        } else if (mrs_ctr) {
+            value = 0x8444c004ull;
+        } else if ((insn & 0x9F000000u) == 0x90000000u || (insn & 0x9F000000u) == 0x10000000u) {
             bool page = (insn & 0x80000000u) != 0;
             int64_t imm = (int64_t)((((insn >> 5) & 0x7FFFFu) << 2) | ((insn >> 29) & 3u));
             if (imm & 0x100000) imm -= 0x200000;
@@ -1107,7 +1116,11 @@ static void patch_image(tl_lib *L, size_t *n_tpidr, size_t *n_adrp, size_t *n_ad
                 if (G.verbosity >= 3) tl_log_line("ld: %s: x18 word %08x at +%#llx left alone", L->name, insn, (unsigned long long)(L->code[r].start + (uint64_t)i * 4));
             }
             if (xr == X18_DONE) { L->n_x18++; continue; }
-            if (xr == X18_FAILED) { L->n_x18_failed++; continue; }
+            if (xr == X18_FAILED) {
+                L->n_x18_failed++;
+                if (G.verbosity >= 1 && !is_data) tl_log_line("ld: %s: x18 site %08x at +%#llx could not be rewritten", L->name, insn, (unsigned long long)va);
+                /* not `continue`: a site that names x18 can still need the tpidr / ctr / adrp / svc patch below */
+            }
             if ((insn & 0xFFFFFFE0u) == 0xD53B0020u) {            /* mrs Xt, ctr_el0: privileged for user code on Apple silicon */
                 /* The cache type register: the smallest cache lines the program may assume. Code that flushes the
                  * instruction cache (V8) reads it to step by line; 64 bytes is right for Apple's and safe for any. */

@@ -545,6 +545,20 @@ static int b___isnanf(float x) { return isnan(x); }
 /* bionic's FP_* are 0 nan, 1 infinite, 2 zero, 3 subnormal, 4 normal */
 static int b___fpclassifyd(double x) { switch (fpclassify(x)) { case FP_NAN: return 0; case FP_INFINITE: return 1; case FP_ZERO: return 2; case FP_SUBNORMAL: return 3; default: return 4; } }
 static void b_sincosf(float x, float *s, float *c) { *s = sinf(x); *c = cosf(x); }
+/* bionic's libm exports these as functions (Android's isfinite()/isinf()/isnan() macros call them); an unresolved one answered 0, so Adobe AIR's
+ * libCore saw every Number as non-finite. */
+static int b___isfinite(double x) { return isfinite(x) ? 1 : 0; }
+static int b___isfinitef(float x) { return isfinite(x) ? 1 : 0; }
+static int b___isinf(double x) { return isinf(x) ? 1 : 0; }
+static int b___isinff(float x) { return isinf(x) ? 1 : 0; }
+static int b___isnan(double x) { return isnan(x) ? 1 : 0; }
+static int b___isnormal(double x) { return isnormal(x) ? 1 : 0; }
+static int b___isnormalf(float x) { return isnormal(x) ? 1 : 0; }
+static int b___signbit(double x) { return signbit(x) ? 1 : 0; }
+static int b___signbitf(float x) { return signbit(x) ? 1 : 0; }
+static int b___fpclassifyf(float x) { switch (fpclassify(x)) { case FP_NAN: return 0; case FP_INFINITE: return 1; case FP_ZERO: return 2; case FP_SUBNORMAL: return 3; default: return 4; } }
+static int b_settimeofday(const void *tv, const void *tz) { (void)tv; (void)tz; tl_set_guest_errno(1); return -1; }   /* EPERM, as for any app */
+static int b_execlp(const char *file, const char *arg, ...) { (void)file; (void)arg; tl_set_guest_errno(38); return -1; }
 
 static const char *b_strerror(int e) { return strerror(tl_errno_from_guest(e)); }
 static int b_strerror_r(int e, char *buf, size_t n)
@@ -733,6 +747,10 @@ const tl_bionic_entry tl_tab_str[] = {
     TL_DIRECT(tanhf), TL_DIRECT(coshf), TL_DIRECT(asinhf),
     TL_DIRECT(acoshf), TL_DIRECT(atanhf), TL_DIRECT(expm1f), TL_DIRECT(log1pf),
     TL_WRAP("__isnanf", b___isnanf), TL_WRAP("__fpclassifyd", b___fpclassifyd),
+    TL_WRAP("__isfinite", b___isfinite), TL_WRAP("__isfinitef", b___isfinitef), TL_WRAP("__isinf", b___isinf), TL_WRAP("__isinff", b___isinff),
+    TL_WRAP("__isnan", b___isnan), TL_WRAP("__isnormal", b___isnormal), TL_WRAP("__isnormalf", b___isnormalf), TL_WRAP("__signbit", b___signbit),
+    TL_WRAP("__signbitf", b___signbitf), TL_WRAP("__fpclassifyf", b___fpclassifyf),
+    TL_WRAP("settimeofday", b_settimeofday), TL_WRAP("execlp", b_execlp),
     /* locale.h */
     TL_WRAP("setlocale", b_setlocale), TL_WRAP("nl_langinfo", b_nl_langinfo), TL_WRAP("nl_langinfo_l", b_nl_langinfo_l), TL_WRAP("newlocale", b_newlocale), TL_DIRECT(freelocale), TL_DIRECT(uselocale),
     TL_DIRECT(localeconv),
