@@ -388,6 +388,12 @@ static void text_push(const char *kind, const char *utf8)
     tl_javaapp_touch(7, 0, 0, 0);
 }
 void tl_javaapp_text(const char *utf8) { if (utf8 && *utf8) text_push("t", utf8); }
+void tl_javaapp_file_picked(int id, const char *paths)
+{
+    char buf[16384];
+    snprintf(buf, sizeof(buf), "%d\t%s", id, paths ? paths : "");
+    text_push("f", buf);                       /* the same queue as typed text: Java's InputMethods.deliverPending hands 'f' to AppRunner */
+}
 void tl_javaapp_text_delete(void) { text_push("d", NULL); }
 void tl_javaapp_text_action(void) { text_push("e", NULL); }
 void tl_javaapp_keyboard_closed(void) { text_push("h", NULL); }
@@ -419,6 +425,21 @@ NAT(N_getClipboard)
     char *t = A.cfg.get_clipboard ? A.cfg.get_clipboard() : NULL;
     *ret = L(t ? jstr(t) : NULL);
     free(t);
+    return true;
+}
+NAT(N_pickFile)
+{
+    (void)self; (void)ret;
+    int id = a[0].i;
+    char mimes[1024] = "";
+    jobj *arr = a[1].l;
+    if (arr) for (uint32_t i = 0; i < arr->oarr.len; i++) {
+        const char *m = arr->oarr.v[i] ? tl_jni_string(arr->oarr.v[i]) : NULL;
+        if (m && strlen(mimes) + strlen(m) + 2 < sizeof(mimes)) { if (mimes[0]) strcat(mimes, ","); strcat(mimes, m); }
+    }
+    tl_log_line("javaapp: the app asked for a file (request %d, types %s)", id, mimes[0] ? mimes : "*/*");
+    if (A.cfg.pick_file) A.cfg.pick_file(id, mimes, a[2].i != 0);
+    else tl_javaapp_file_picked(id, NULL);
     return true;
 }
 NAT(N_share) { (void)self; (void)ret; const char *t = tl_jni_string(a[0].l); tl_log_line("javaapp: share %.80s", t ? t : ""); if (A.cfg.share && t) A.cfg.share(t); return true; }
@@ -480,6 +501,7 @@ static const struct { const char *name, *sig; dvm_native_fn fn; } k_native[] = {
     { "setClipboard", "(Ljava/lang/String;)V", N_setClipboard },
     { "getClipboard", "()Ljava/lang/String;", N_getClipboard },
     { "share", "(Ljava/lang/String;)V", N_share },
+    { "pickFile", "(I[Ljava/lang/String;Z)V", N_pickFile },
     { "setOrientation", "(I)V", N_setOrientation },
     { "insets", "()[I", N_insets },
     { "nightMode", "()Z", N_nightMode },

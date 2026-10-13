@@ -73,6 +73,10 @@ void husk_java_set_runtime(const char *root, float density);
 void husk_java_back(void);
 /* The host's side of a Java app's views: its keyboard (show, EditorInfo input type and IME options), the clipboard (get returns a
    malloc'd string or NULL), the share sheet, the orientation the activity asks for. Before husk_java_launch. */
+/* The system's file picker for a Java app: pick is called with the request id, the accepted mime types (comma-separated) and whether several
+   files may be chosen; the host answers with husk_java_file_picked: the copies' paths one per line, or NULL when the user backed out. */
+void husk_java_set_file_picker(void (*pick)(int id, const char *mimes, int multiple));
+void husk_java_file_picked(int id, const char *paths);
 void husk_java_set_host(void (*keyboard)(int show, int input_type, int ime_options), void (*set_clipboard)(const char *utf8),
                         char *(*get_clipboard)(void), void (*share)(const char *utf8), void (*orientation)(int android_orientation));
 /* The notch / home indicator areas and the keyboard's height, in surface pixels; before the launch and whenever they change. */

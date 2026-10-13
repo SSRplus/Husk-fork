@@ -60,6 +60,7 @@ static struct {
     char *(*get_clipboard)(void);
     void (*share)(const char *utf8);
     void (*orientation)(int android_orientation);
+    void (*pick_file)(int id, const char *mimes, int multiple);
 } g_java_host;
 
 static unsigned long engine_frames(void);
@@ -358,7 +359,7 @@ static void *launch_thread(void *arg)
                 .apk_path = A.apk, .data_dir = A.data, .package_name = A.package, .width = A.width, .height = A.height,
                 .density = g_java_density, .metal_layer = A.layer, .angle_egl = A.angle, .angle_gles = NULL,
                 .framework_res = fwres, .show_keyboard = g_java_host.keyboard, .set_clipboard = g_java_host.set_clipboard,
-                .get_clipboard = g_java_host.get_clipboard, .share = g_java_host.share, .set_orientation = g_java_host.orientation,
+                .get_clipboard = g_java_host.get_clipboard, .share = g_java_host.share, .set_orientation = g_java_host.orientation, .pick_file = g_java_host.pick_file,
                 .insets = { g_java_insets[0], g_java_insets[1], g_java_insets[2], g_java_insets[3] }, .night_mode = g_java_night,
             };
             ok = tl_javaapp_start(&cfg);
@@ -520,6 +521,9 @@ void husk_java_set_host(void (*keyboard)(int show, int input_type, int ime_optio
     g_java_host.keyboard = keyboard; g_java_host.set_clipboard = set_clipboard; g_java_host.get_clipboard = get_clipboard;
     g_java_host.share = share; g_java_host.orientation = orientation;
 }
+void husk_java_set_file_picker(void (*pick)(int id, const char *mimes, int multiple)) { g_java_host.pick_file = pick; }
+static bool java_running(void);
+void husk_java_file_picked(int id, const char *paths) { if (java_running()) tl_javaapp_file_picked(id, paths); }
 static bool java_running(void) { return atomic_load(&A.state) == HUSK_UNITY_RUNNING && A.engine == ENGINE_JAVA; }
 void husk_java_set_insets(int left, int top, int right, int bottom, int keyboard)
 {

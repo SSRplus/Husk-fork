@@ -31,6 +31,9 @@ typedef struct tl_javaapp_config {
     char *(*get_clipboard)(void);
     void (*share)(const char *utf8);
     void (*set_orientation)(int android_orientation);
+    /* the system's file picker (an app's ACTION_GET_CONTENT / OPEN_DOCUMENT): the host shows it for request `id`, with the comma-separated mime types the app
+       accepts, and answers with tl_javaapp_file_picked */
+    void (*pick_file)(int id, const char *mimes, int multiple);
     int insets[4];                   /* left, top, right, bottom: the screen's notch and home indicator, in pixels */
     bool night_mode;                 /* the phone is in dark mode: the app's configuration says UI_MODE_NIGHT_YES */
 } tl_javaapp_config;
@@ -46,6 +49,8 @@ void tl_javaapp_set_paused(bool paused);
 void tl_javaapp_text(const char *utf8);
 void tl_javaapp_text_delete(void);
 void tl_javaapp_text_action(void);
+/* The answer to pick_file: the chosen files' paths, one per line, or NULL when the user backed out. */
+void tl_javaapp_file_picked(int id, const char *paths);
 void tl_javaapp_keyboard_closed(void);
 /* The screen's insets changed (rotation), or the keyboard now covers ime_bottom pixels of it. */
 void tl_javaapp_set_insets(int left, int top, int right, int bottom, int ime_bottom);
