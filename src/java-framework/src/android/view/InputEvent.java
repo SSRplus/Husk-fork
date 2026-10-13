@@ -10,6 +10,8 @@ public abstract class InputEvent { public abstract int getDeviceId(); public abs
     public void cancel() {}
     public int describeContents() { return 0; }
     public int getId() { return 0; }
+    public boolean isFromSource(int source) { return (getSource() & source) == source; }
+    public InputDevice getDevice() { return InputDevice.getDevice(getDeviceId()); }
     public int getSequenceNumber() { return 0; }
     public boolean isTainted() { return (huskFill.get("Tainted") instanceof Boolean ? (Boolean) huskFill.get("Tainted") : false); }
     protected void prepareForReuse() {}
