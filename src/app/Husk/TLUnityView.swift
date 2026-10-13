@@ -505,6 +505,35 @@ final class TLUnityUIView: UIView, UIKeyInput {
         }, { orientation in
             HuskLog.log("tl", "java: the app asks for orientation \(orientation)")
         })
+        // An app's file chooser (ACTION_GET_CONTENT / OPEN_DOCUMENT -- Vita3K+'s "Install firmware" asks for the .PUP this way): the system's picker, every file
+        // offered (a picker limited to the app's mime types greys out a type iOS has never heard of, which a .PUP is). The choice is copied into the app's own
+        // folder first -- the guest reads it as an ordinary file, and the security-scoped URL it was handed does not outlive the picker.
+        husk_java_set_file_picker { id, mimes, multiple in
+            Task { @MainActor in
+                HuskFilePicker.present(multiple: multiple != 0, onPick: { urls in
+                    DispatchQueue.global(qos: .userInitiated).async {
+                        let fm = FileManager.default
+                        let dir = fm.temporaryDirectory.appendingPathComponent("husk-imports", isDirectory: true)
+                        try? fm.removeItem(at: dir)
+                        try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
+                        var paths: [String] = []
+                        for url in urls {
+                            let scoped = url.startAccessingSecurityScopedResource()
+                            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+                            let dest = dir.appendingPathComponent(url.lastPathComponent)
+                            do {
+                                try fm.copyItem(at: url, to: dest)
+                                paths.append(dest.path)
+                                HuskLog.log("ui", "file picker: copied \(url.lastPathComponent) for the app")
+                            } catch {
+                                HuskLog.log("ui", "file picker: copying \(url.lastPathComponent) failed: \(error.localizedDescription)")
+                            }
+                        }
+                        if paths.isEmpty { husk_java_file_picked(id, nil) } else { husk_java_file_picked(id, paths.joined(separator: "\n")) }
+                    }
+                }, onFail: { _ in husk_java_file_picked(id, nil) }, onCancel: { husk_java_file_picked(id, nil) })
+            }
+        }
     }
 
     /// A Flutter app closed itself (back on its first screen): whatever shows it closes.
