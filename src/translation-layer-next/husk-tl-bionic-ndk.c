@@ -862,6 +862,29 @@ static int b_ASensor_getType(void *s) { (void)s; return 0; }
 static float b_ASensor_getResolution(void *s) { (void)s; return 0.f; }
 static int b_ASensor_getMinDelay(void *s) { (void)s; return 0; }
 
+/* -------------------------------------------------------------- camera (none) */
+
+/*
+ * libcamera2ndk: no camera is offered, and every call says so in the way the NDK does (an empty camera list, an error for the rest). An app that looks the functions up
+ * with dlsym and does not check the result -- SDL3's camera driver as Vita3K+ ships it logs "symbol 'ACameraManager_create' can't be found" and carries on -- called a
+ * null pointer (pc 0 at start-up); Godot's camera feed imported the same names and was bound to logging stubs, which answer 0 (ACAMERA_OK) to everything.
+ */
+#define ACAM_INVALID (-10001)
+typedef struct { int numCameras; const char *const *cameraIds; } aca_idlist;
+static void *b_ACameraManager_create(void) { return calloc(1, 64); }
+static void b_ACameraManager_delete(void *m) { free(m); }
+static int b_ACameraManager_getCameraIdList(void *m, aca_idlist **out) { (void)m; if (!out) return ACAM_INVALID; *out = calloc(1, sizeof(aca_idlist)); return *out ? 0 : ACAM_INVALID; }
+static void b_ACameraManager_deleteCameraIdList(aca_idlist *l) { free(l); }
+static int b_cam_ok(void) { return 0; }
+static int b_cam_invalid(void) { return ACAM_INVALID; }
+static void b_cam_noop(void) {}
+static const char *b_cam_emptystr(void) { return ""; }
+static int b_cam_out_create(void *a, void **out) { (void)a; if (!out) return ACAM_INVALID; *out = calloc(1, 32); return *out ? 0 : ACAM_INVALID; }
+static int b_ACaptureSessionOutputContainer_create(void **out) { if (!out) return ACAM_INVALID; *out = calloc(1, 32); return *out ? 0 : ACAM_INVALID; }
+static void b_cam_free(void *p) { free(p); }
+/* the image reader and image calls a camera or a video would use: media_status_t errors, "no buffer" for an acquire */
+static int b_AImageReader_acquire(void) { return -20003; }
+
 /* ------------------------------------------------------------ media (none) */
 
 #define MEDIA_ERR (-10000)
@@ -1021,6 +1044,31 @@ const tl_bionic_entry tl_tab_ndk[] = {
     TL_WRAP("ASensorEventQueue_hasEvents", b_ASensorEventQueue_hasEvents), TL_WRAP("ASensorEventQueue_getEvents", b_ASensorEventQueue_getEvents),
     TL_WRAP("ASensor_getName", b_ASensor_getName), TL_WRAP("ASensor_getVendor", b_ASensor_getVendor), TL_WRAP("ASensor_getType", b_ASensor_getType),
     TL_WRAP("ASensor_getResolution", b_ASensor_getResolution), TL_WRAP("ASensor_getMinDelay", b_ASensor_getMinDelay),
+    /* camera: none */
+    TL_WRAP("ACameraManager_create", b_ACameraManager_create), TL_WRAP("ACameraManager_delete", b_ACameraManager_delete),
+    TL_WRAP("ACameraManager_getCameraIdList", b_ACameraManager_getCameraIdList), TL_WRAP("ACameraManager_deleteCameraIdList", b_ACameraManager_deleteCameraIdList),
+    TL_WRAP("ACameraManager_registerAvailabilityCallback", b_cam_ok), TL_WRAP("ACameraManager_unregisterAvailabilityCallback", b_cam_ok),
+    TL_WRAP("ACameraManager_registerExtendedAvailabilityCallback", b_cam_ok), TL_WRAP("ACameraManager_unregisterExtendedAvailabilityCallback", b_cam_ok),
+    TL_WRAP("ACameraManager_getCameraCharacteristics", b_cam_invalid), TL_WRAP("ACameraManager_openCamera", b_cam_invalid),
+    TL_WRAP("ACameraMetadata_getConstEntry", b_cam_invalid), TL_WRAP("ACameraMetadata_getAllTags", b_cam_invalid), TL_WRAP("ACameraMetadata_free", b_cam_noop),
+    TL_WRAP("ACameraMetadata_copy", b_cam_noop), TL_WRAP("ACameraDevice_close", b_cam_ok), TL_WRAP("ACameraDevice_getId", b_cam_emptystr),
+    TL_WRAP("ACameraDevice_createCaptureRequest", b_cam_invalid), TL_WRAP("ACameraDevice_createCaptureSession", b_cam_invalid),
+    TL_WRAP("ACameraDevice_createCaptureSessionWithSessionParameters", b_cam_invalid),
+    TL_WRAP("ACaptureSessionOutputContainer_create", b_ACaptureSessionOutputContainer_create), TL_WRAP("ACaptureSessionOutputContainer_add", b_cam_ok),
+    TL_WRAP("ACaptureSessionOutputContainer_remove", b_cam_ok), TL_WRAP("ACaptureSessionOutputContainer_free", b_cam_free),
+    TL_WRAP("ACaptureSessionOutput_create", b_cam_out_create), TL_WRAP("ACaptureSessionOutput_free", b_cam_free),
+    TL_WRAP("ACameraOutputTarget_create", b_cam_out_create), TL_WRAP("ACameraOutputTarget_free", b_cam_free),
+    TL_WRAP("ACaptureRequest_addTarget", b_cam_ok), TL_WRAP("ACaptureRequest_removeTarget", b_cam_ok), TL_WRAP("ACaptureRequest_free", b_cam_noop),
+    TL_WRAP("ACaptureRequest_setEntry_u8", b_cam_invalid), TL_WRAP("ACaptureRequest_setEntry_i32", b_cam_invalid), TL_WRAP("ACaptureRequest_setEntry_float", b_cam_invalid),
+    TL_WRAP("ACaptureRequest_setEntry_i64", b_cam_invalid), TL_WRAP("ACaptureRequest_setEntry_double", b_cam_invalid), TL_WRAP("ACaptureRequest_setEntry_rational", b_cam_invalid),
+    TL_WRAP("ACaptureRequest_getConstEntry", b_cam_invalid),
+    TL_WRAP("ACameraCaptureSession_setRepeatingRequest", b_cam_invalid), TL_WRAP("ACameraCaptureSession_capture", b_cam_invalid),
+    TL_WRAP("ACameraCaptureSession_stopRepeating", b_cam_ok), TL_WRAP("ACameraCaptureSession_abortCaptures", b_cam_ok), TL_WRAP("ACameraCaptureSession_close", b_cam_noop),
+    MEDIA_ERRF("AImageReader_new"), MEDIA_ERRF("AImageReader_newWithUsage"), MEDIA_ERRF("AImageReader_setImageListener"), MEDIA_ERRF("AImageReader_getWindow"),
+    MEDIA_ERRF("AImageReader_getWidth"), MEDIA_ERRF("AImageReader_getHeight"), MEDIA_ERRF("AImageReader_getFormat"), MEDIA_ERRF("AImageReader_getMaxImages"),
+    TL_WRAP("AImageReader_acquireNextImage", b_AImageReader_acquire), TL_WRAP("AImageReader_acquireLatestImage", b_AImageReader_acquire), TL_WRAP("AImageReader_delete", b_cam_noop),
+    MEDIA_ERRF("AImage_getPlaneRowStride"), MEDIA_ERRF("AImage_getPlanePixelStride"), MEDIA_ERRF("AImage_getPlaneData"), MEDIA_ERRF("AImage_getTimestamp"),
+    MEDIA_ERRF("AImage_getWidth"), MEDIA_ERRF("AImage_getHeight"), MEDIA_ERRF("AImage_getFormat"), MEDIA_ERRF("AImage_getNumberOfPlanes"), TL_WRAP("AImage_delete", b_cam_noop),
     /* media */
     MEDIA_NULL("AMediaCodec_createDecoderByType"), MEDIA_NULL("AMediaExtractor_new"), MEDIA_NULL("AMediaCodec_getOutputFormat"),
     MEDIA_NULL("AMediaExtractor_getTrackFormat"), MEDIA_NULL("AMediaCodec_getInputBuffer"), MEDIA_NULL("AMediaCodec_getOutputBuffer"),

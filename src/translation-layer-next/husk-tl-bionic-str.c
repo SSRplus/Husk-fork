@@ -21,6 +21,7 @@
 #include <stdlib.h>
 #include <stdatomic.h>
 #include <string.h>
+#include <dlfcn.h>
 #include <strings.h>
 #include <time.h>
 #include <unistd.h>
@@ -547,6 +548,42 @@ static int b___fpclassifyd(double x) { switch (fpclassify(x)) { case FP_NAN: ret
 static void b_sincosf(float x, float *s, float *c) { *s = sinf(x); *c = cosf(x); }
 /* bionic's libm exports these as functions (Android's isfinite()/isinf()/isnan() macros call them); an unresolved one answered 0, so Adobe AIR's
  * libCore saw every Number as non-finite. */
+/* iconv: bionic has it (API 28), the guests that import it (Vita3K+'s SDL converting UTF-8 and UTF-16 names and paths) were given logging stubs, so every conversion
+ * "worked" and produced nothing. iOS ships libiconv; the host's is used, found at run time so the project needs no extra link flag. */
+static void *g_iconv_h;
+static void *(*h_iconv_open)(const char *, const char *);
+static size_t (*h_iconv)(void *, char **, size_t *, char **, size_t *);
+static int (*h_iconv_close)(void *);
+static void iconv_load(void)
+{
+    if (g_iconv_h) return;
+    g_iconv_h = dlopen("/usr/lib/libiconv.2.dylib", RTLD_NOW);
+    if (!g_iconv_h) g_iconv_h = RTLD_DEFAULT;
+    h_iconv_open = (void *(*)(const char *, const char *))dlsym(g_iconv_h, "iconv_open");
+    if (!h_iconv_open) h_iconv_open = (void *(*)(const char *, const char *))dlsym(g_iconv_h, "libiconv_open");
+    h_iconv = (size_t (*)(void *, char **, size_t *, char **, size_t *))dlsym(g_iconv_h, "iconv");
+    if (!h_iconv) h_iconv = (size_t (*)(void *, char **, size_t *, char **, size_t *))dlsym(g_iconv_h, "libiconv");
+    h_iconv_close = (int (*)(void *))dlsym(g_iconv_h, "iconv_close");
+    if (!h_iconv_close) h_iconv_close = (int (*)(void *))dlsym(g_iconv_h, "libiconv_close");
+}
+static void *b_iconv_open(const char *to, const char *from)
+{
+    iconv_load();
+    if (!h_iconv_open) { tl_set_guest_errno(22); return (void *)-1; }
+    TL_ERRNO_BEGIN();
+    void *cd = h_iconv_open(to, from);
+    if (cd == (void *)-1) TL_ERRNO_END();
+    return cd;
+}
+static size_t b_iconv(void *cd, char **in, size_t *il, char **out, size_t *ol)
+{
+    if (!h_iconv) { tl_set_guest_errno(22); return (size_t)-1; }
+    TL_ERRNO_BEGIN();
+    size_t r = h_iconv(cd, in, il, out, ol);
+    if (r == (size_t)-1) TL_ERRNO_END();
+    return r;
+}
+static int b_iconv_close(void *cd) { return h_iconv_close ? h_iconv_close(cd) : 0; }
 /* the two IPv6 address constants bionic exports as data (16 bytes: all zero, and ::1); an unresolved one was a logging stub, so a socket bound to "any" read code */
 static const unsigned char g_in6addr_any[16] = { 0 };
 static const unsigned char g_in6addr_loopback[16] = { [15] = 1 };
@@ -761,7 +798,8 @@ const tl_bionic_entry tl_tab_str[] = {
     TL_DATA("daylight", &g_daylight), TL_DATA("timezone", &g_timezone), TL_DATA("tzname", g_tzname),
     TL_DATA("sys_signame", g_sys_signame),
     /* stdio.h */
-    TL_DATA("__sF", g_sF), TL_DATA("in6addr_any", g_in6addr_any), TL_DATA("in6addr_loopback", g_in6addr_loopback),
+    TL_DATA("__sF", g_sF), TL_WRAP("iconv_open", b_iconv_open), TL_WRAP("iconv", b_iconv), TL_WRAP("iconv_close", b_iconv_close),
+    TL_DATA("in6addr_any", g_in6addr_any), TL_DATA("in6addr_loopback", g_in6addr_loopback),
     TL_WRAP("fopen", b_fopen), TL_WRAP("freopen", b_freopen), TL_WRAP("freopen64", b_freopen), TL_WRAP("fopen64", b_fopen), TL_WRAP("fseeko64", b_fseeko), TL_WRAP("ftello64", b_ftello), TL_DIRECT(funopen), TL_DIRECT(wcwidth), TL_WRAP("fdopen", b_fdopen), TL_WRAP("fclose", b_fclose), TL_WRAP("fgets", b_fgets),
     TL_WRAP("fread", b_fread), TL_WRAP("fwrite", b_fwrite), TL_WRAP("fseek", b_fseek), TL_WRAP("fseeko", b_fseeko),
     TL_WRAP("ftell", b_ftell), TL_WRAP("ftello", b_ftello), TL_WRAP("fgetpos", b_fgetpos), TL_WRAP("fsetpos", b_fsetpos), TL_WRAP("fgetpos64", b_fgetpos), TL_WRAP("fsetpos64", b_fsetpos), TL_WRAP("fflush", b_fflush), TL_WRAP("fputc", b_fputc),
