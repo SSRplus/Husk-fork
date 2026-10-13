@@ -31,6 +31,7 @@
 #include <fcntl.h>
 #include <mach/mach_time.h>
 #include <pthread.h>
+#include <pthread/qos.h>
 #include <sched.h>
 #include <stdarg.h>
 #include <stdatomic.h>
@@ -1522,6 +1523,8 @@ static void attempt_stop(int code)
 static void *attempt_thread(void *arg)
 {
     int seconds = (int)(intptr_t)arg;
+    /* the thread that runs the game: top class, whatever the queue that started the run was (see the note on guest threads in b_create) */
+    pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
 
     /* The W^X toggle is per thread: this is the thread that runs guest
      * code, so this is the thread that switches the region to
