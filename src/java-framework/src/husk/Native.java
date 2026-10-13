@@ -35,6 +35,9 @@ public final class Native {
     public static native void setClipboard(String text);
     public static native String getClipboard();
     public static native void share(String text);
+    /** The system's file picker for request `id`: the mime types the app accepts, and whether several files may be chosen. The answer comes back through
+     *  InputMethods.deliverPending as an 'f' item, which AppRunner.filePicked turns into the activity result. */
+    public static native void pickFile(int id, String[] mimeTypes, boolean multiple);
     public static native void setOrientation(int androidOrientation);
     public static native int[] insets();
     public static native boolean nightMode();                // the phone is in dark mode                     // left, top, right, bottom of the screen the app must keep clear

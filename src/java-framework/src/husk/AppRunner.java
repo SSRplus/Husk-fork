@@ -180,6 +180,7 @@ public final class AppRunner {
             if (text != null) Native.share(text);
             return;
         }
+        if (Intent.ACTION_GET_CONTENT.equals(action) || Intent.ACTION_OPEN_DOCUMENT.equals(action)) { pickFile(from, i, request); return; }
         if ("android.intent.action.CHOOSER".equals(action)) { Intent inner = i.getParcelableExtra("android.intent.extra.INTENT"); if (inner != null) startActivity(from, inner, request, opts); return; }
         /* a screen of the system's (the account chooser, Settings pages, the permission dialog): Husk has none of them -- asked for a
            result, the caller hears the user backed out, as it would on a phone; otherwise nothing opens */
@@ -192,6 +193,48 @@ public final class AppRunner {
             return;
         }
         throw new ActivityNotFoundException("No Activity found to handle " + i);
+    }
+    // ---- the file picker: GET_CONTENT / OPEN_DOCUMENT go to the phone's own picker, and the file chosen comes back as the activity's result
+    private static final java.util.HashMap<Integer, Object[]> sPicks = new java.util.HashMap<>();   // id -> { caller activity, request code }
+    private static int sPickId;
+    private static void pickFile(Context from, Intent i, int request) {
+        final Activity caller = from instanceof Activity ? (Activity) from : top();
+        if (request < 0 || caller == null) return;                       // nobody is waiting for the answer
+        java.util.ArrayList<String> types = new java.util.ArrayList<>();
+        if (i.getType() != null) types.add(i.getType());
+        String[] extra = i.getStringArrayExtra(Intent.EXTRA_MIME_TYPES);
+        if (extra != null) for (String t : extra) types.add(t);
+        final int id = ++sPickId;
+        sPicks.put(id, new Object[] { caller, request });
+        boolean multiple = i.getBooleanExtra(Intent.EXTRA_ALLOW_MULTIPLE, false);
+        android.util.Log.d("Husk", "file picker " + id + " for request " + request + " types " + types);
+        Native.pickFile(id, types.toArray(new String[0]), multiple);
+    }
+    /** The host's answer to pickFile: "id", a tab, and the chosen files' paths one per line (none: the user backed out). */
+    public static void filePicked(String answer) {
+        int tab = answer.indexOf('\t');
+        if (tab < 0) return;
+        int id;
+        try { id = Integer.parseInt(answer.substring(0, tab)); } catch (NumberFormatException e) { return; }
+        Object[] w = sPicks.remove(id);
+        if (w == null) return;
+        Activity caller = (Activity) w[0];
+        int request = (Integer) w[1];
+        String list = answer.substring(tab + 1);
+        if (list.isEmpty()) { caller.huskActivityResult(request, Activity.RESULT_CANCELED, null); return; }
+        String[] paths = list.split("\n");
+        Intent data = new Intent();
+        data.setData(android.net.Uri.fromFile(new java.io.File(paths[0])));
+        data.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        if (paths.length > 1) {
+            try {
+                android.content.ClipData clip = android.content.ClipData.newRawUri("files", android.net.Uri.fromFile(new java.io.File(paths[0])));
+                for (int k = 1; k < paths.length; k++) clip.addItem(new android.content.ClipData.Item(android.net.Uri.fromFile(new java.io.File(paths[k]))));
+                data.setClipData(clip);
+            } catch (Throwable t) { android.util.Log.w("Husk", "several files: " + t); }
+        }
+        android.util.Log.d("Husk", "file picked for request " + request + ": " + paths[0]);
+        caller.huskActivityResult(request, Activity.RESULT_OK, data);
     }
     /** Activity.finish: the one below comes back (with the result when it asked for one). */
     public static void finish(Activity a) { sHandler.post(() -> finishNow(a, true)); }
