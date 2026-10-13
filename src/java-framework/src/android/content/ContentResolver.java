@@ -34,6 +34,27 @@ public class ContentResolver {
     /** The phone's own providers (media, contacts, calendar...): there is no such data here, so an empty answer, as a phone
      *  with none would give; an authority nobody has gives null, as on Android. */
     private static Cursor systemEmpty(Uri u, String[] proj) {
+        if (u != null && SCHEME_FILE.equals(u.getScheme()) && u.getPath() != null) {
+            // a file the host's picker handed over: the columns an app asks of a document (its name and size)
+            java.io.File f = new java.io.File(u.getPath());
+            if (!f.exists()) return null;
+            String[] cols = proj != null ? proj : new String[] { "_display_name", "_size" };
+            android.database.MatrixCursor c = new android.database.MatrixCursor(cols);
+            Object[] row = new Object[cols.length];
+            for (int k = 0; k < cols.length; k++) {
+                switch (cols[k]) {
+                case "_display_name": case "title": row[k] = f.getName(); break;
+                case "_size": case "size": row[k] = f.length(); break;
+                case "mime_type": row[k] = java.net.URLConnection.guessContentTypeFromName(f.getName()); break;
+                case "last_modified": case "date_modified": row[k] = f.lastModified(); break;
+                case "_data": row[k] = f.getPath(); break;
+                case "_id": row[k] = 1; break;
+                default: row[k] = null;
+                }
+            }
+            c.addRow(row);
+            return c;
+        }
         String a = u == null ? null : u.getAuthority();
         if (a == null) return null;
         switch (a) {
