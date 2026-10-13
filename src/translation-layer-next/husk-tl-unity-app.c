@@ -6,6 +6,7 @@
 #include <fcntl.h>
 #include <pthread.h>
 #include <pthread/qos.h>
+#include "husk-tl-codewrite.h"
 #include <signal.h>
 #include <stdatomic.h>
 #include <stdio.h>
@@ -169,7 +170,9 @@ static void *heartbeat_thread(void *arg)
         if (tick < 40) usleep(500000); else sleep(3);          /* twice a second for the first twenty seconds */
         unsigned long f = engine_frames();
 #if TARGET_OS_IPHONE
-        tl_log_line("unity: alive: %lu frames (+%lu), %zu MiB left before jetsam", f, f - last, os_proc_available_memory() >> 20);
+        { static long cw_last; long cw = tl_codewrite_count();
+          tl_log_line("unity: alive: %lu frames (+%lu), %zu MiB left before jetsam, %ld stores into code emulated (+%ld)", f, f - last, os_proc_available_memory() >> 20, cw, cw - cw_last);
+          cw_last = cw; }
 #else
         tl_log_line("unity: alive: %lu frames (+%lu)", f, f - last);
 #endif
