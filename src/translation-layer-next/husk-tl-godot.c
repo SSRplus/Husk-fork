@@ -91,6 +91,16 @@ static jobj *command_line(void)
         }
         if (owned) free((void *)d);
     }
+    /* iOS has no Vulkan, and Godot 4's own fall-back to OpenGL does not survive a project whose renderer is Forward+ or Mobile ("Unable to create DisplayServer, all
+     * display drivers failed": a running frame counter over a black layer). Say OpenGL ES and the compatibility renderer outright, unless the export already did. */
+    if (U.major == 4) {
+        bool has_driver = false, has_method = false;
+        for (int i = 0; i < n; i++) { if (!strcmp(list[i], "--rendering-driver") || !strcmp(list[i], "--gl-driver")) has_driver = true; if (!strcmp(list[i], "--rendering-method")) has_method = true; }
+        const char *extra[4]; int ne = 0;
+        if (!has_driver) { extra[ne++] = "--rendering-driver"; extra[ne++] = "opengl3"; }
+        if (!has_method) { extra[ne++] = "--rendering-method"; extra[ne++] = "gl_compatibility"; }
+        for (int i = 0; i < ne && n < 32; i++) list[n++] = strdup(extra[i]);
+    }
     jobj *arr = tl_jni_new_obj_array(tl_jni_class("java/lang/String"), (uint32_t)n);
     for (int i = 0; i < n; i++) { arr->oarr.v[i] = tl_jni_new_string(list[i]); tl_log_line("godot: argument %s", list[i]); free(list[i]); }
     return arr;
@@ -139,6 +149,45 @@ bool tl_godot_start(const tl_godot_config *cfg)
     static const char *sig_noact = "(Lorg/godotengine/godot/Godot;Landroid/content/res/AssetManager;Lorg/godotengine/godot/GodotIO;"
         "Lorg/godotengine/godot/utils/GodotNetUtils;Lorg/godotengine/godot/io/directory/DirectoryAccessHandler;"
         "Lorg/godotengine/godot/io/file/FileAccessHandler;Z)Z";
+    /* Whatever the game's GodotLib.initialize really is, build its arguments from its own declared signature, one object per parameter by type. Godot 4.7 renamed
+     * the first parameter's class (Godot -> nativeapi.GodotNativeBridge) and so matched neither of the two signatures below: the 8-argument call was made, every object
+     * landed one parameter early, and Godot then asked the I/O object to open directories, the directory object to open files and so on -- no user:// at all. */
+    char real_sig[600]; bool real_static = false;
+    if (tl_dexidx_method_sig(LIB, "initialize", real_sig, sizeof(real_sig), &real_static) && real_sig[0] == '(') {
+        void *a[12]; int na = 0;
+        const char *q = real_sig + 1;
+        while (*q && *q != ')' && na < 10) {
+            if (*q == 'L') {
+                const char *e = strchr(q, ';'); if (!e) break;
+                char cn[200]; size_t l = (size_t)(e - q - 1); if (l >= sizeof(cn)) l = sizeof(cn) - 1;
+                memcpy(cn, q + 1, l); cn[l] = 0;
+                const char *base = strrchr(cn, '/'); base = base ? base + 1 : cn;
+                void *o;
+                if (!strcmp(cn, "android/app/Activity")) o = tl_hle_activity();
+                else if (!strcmp(cn, "android/content/res/AssetManager")) o = tl_hle_assets();
+                else if (!strcmp(base, "GodotIO")) o = io;
+                else if (!strcmp(base, "GodotNetUtils")) o = net;
+                else if (!strcmp(base, "DirectoryAccessHandler")) o = dirs;
+                else if (!strcmp(base, "FileAccessHandler")) o = files;
+                else if (!strcmp(cn, "org/godotengine/godot/Godot")) o = godot;
+                else o = tl_jni_new_object(tl_jni_class(cn));
+                a[na++] = o;
+                q = e + 1;
+            } else if (*q == '[') {
+                while (*q == '[') q++;
+                if (*q == 'L') { const char *e = strchr(q, ';'); if (!e) break; q = e + 1; } else if (*q) q++;
+                a[na++] = NULL;
+            } else { a[na++] = NULL; q++; }       /* a primitive: useApkExpansion and the like, false */
+        }
+        const bool returns_bool = *q == ')' && q[1] == 'Z';
+        typedef uintptr_t (*initn_fn)(void *env, void *cls, void *, void *, void *, void *, void *, void *, void *, void *, void *, void *);
+        initn_fn init = (initn_fn)native_of("initialize", real_sig);
+        if (!init) return false;
+        tl_log_line("godot: initialize %s with %d arguments", real_sig, na);
+        uintptr_t r = init(tl_jni_env(), tl_jni_class_object(LIB), na > 0 ? a[0] : NULL, na > 1 ? a[1] : NULL, na > 2 ? a[2] : NULL, na > 3 ? a[3] : NULL,
+                           na > 4 ? a[4] : NULL, na > 5 ? a[5] : NULL, na > 6 ? a[6] : NULL, na > 7 ? a[7] : NULL, na > 8 ? a[8] : NULL, na > 9 ? a[9] : NULL);
+        if (returns_bool && !(r & 0xFF)) { tl_log_line("godot: initialize refused"); return false; }
+    } else
     if (tl_dexidx_declares_method(LIB, "initialize", sig_noact, NULL)) {
         typedef uint8_t (*init7_fn)(void *env, void *cls, void *godot, void *assets, void *io, void *net, void *dirs, void *files, uint8_t exp);
         init7_fn init = (init7_fn)native_of("initialize", sig_noact);

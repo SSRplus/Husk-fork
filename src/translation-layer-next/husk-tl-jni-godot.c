@@ -426,5 +426,14 @@ void tl_godot_hle_install(const char *pkg, const char *apk, const char *data, in
     G.w = w; G.h = h;
     mkdirs(G.files); mkdirs(G.cache);
     for (size_t i = 0; i < sizeof(k_classes) / sizeof(k_classes[0]); i++) tl_jni_declare(k_classes[i], "java/lang/Object");
+    tl_jni_declare("org/godotengine/godot/nativeapi/GodotNativeBridge", "java/lang/Object");
     tl_jni_register_hle(k_godot);
+    /* Godot 4.7 moved everything its native code asks of the Godot class (alert, forceQuit, the command line, the benchmark calls...) to nativeapi.GodotNativeBridge:
+     * the same answers, under the new class name. */
+    size_t ng = 0; while (k_godot[ng].cls) ng++;
+    tl_jhle *nb = calloc(ng + 1, sizeof(*nb)); size_t nn = 0;
+    if (nb) {
+        for (size_t i = 0; i < ng; i++) if (!strcmp(k_godot[i].cls, GD)) { nb[nn] = k_godot[i]; nb[nn].cls = "org/godotengine/godot/nativeapi/GodotNativeBridge"; nn++; }
+        tl_jni_register_hle(nb);
+    }
 }

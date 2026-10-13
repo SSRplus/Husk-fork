@@ -547,6 +547,9 @@ static int b___fpclassifyd(double x) { switch (fpclassify(x)) { case FP_NAN: ret
 static void b_sincosf(float x, float *s, float *c) { *s = sinf(x); *c = cosf(x); }
 /* bionic's libm exports these as functions (Android's isfinite()/isinf()/isnan() macros call them); an unresolved one answered 0, so Adobe AIR's
  * libCore saw every Number as non-finite. */
+/* the two IPv6 address constants bionic exports as data (16 bytes: all zero, and ::1); an unresolved one was a logging stub, so a socket bound to "any" read code */
+static const unsigned char g_in6addr_any[16] = { 0 };
+static const unsigned char g_in6addr_loopback[16] = { [15] = 1 };
 static int b___isfinite(double x) { return isfinite(x) ? 1 : 0; }
 static int b___isfinitef(float x) { return isfinite(x) ? 1 : 0; }
 static int b___isinf(double x) { return isinf(x) ? 1 : 0; }
@@ -758,7 +761,7 @@ const tl_bionic_entry tl_tab_str[] = {
     TL_DATA("daylight", &g_daylight), TL_DATA("timezone", &g_timezone), TL_DATA("tzname", g_tzname),
     TL_DATA("sys_signame", g_sys_signame),
     /* stdio.h */
-    TL_DATA("__sF", g_sF),
+    TL_DATA("__sF", g_sF), TL_DATA("in6addr_any", g_in6addr_any), TL_DATA("in6addr_loopback", g_in6addr_loopback),
     TL_WRAP("fopen", b_fopen), TL_WRAP("freopen", b_freopen), TL_WRAP("freopen64", b_freopen), TL_WRAP("fopen64", b_fopen), TL_WRAP("fseeko64", b_fseeko), TL_WRAP("ftello64", b_ftello), TL_DIRECT(funopen), TL_DIRECT(wcwidth), TL_WRAP("fdopen", b_fdopen), TL_WRAP("fclose", b_fclose), TL_WRAP("fgets", b_fgets),
     TL_WRAP("fread", b_fread), TL_WRAP("fwrite", b_fwrite), TL_WRAP("fseek", b_fseek), TL_WRAP("fseeko", b_fseeko),
     TL_WRAP("ftell", b_ftell), TL_WRAP("ftello", b_ftello), TL_WRAP("fgetpos", b_fgetpos), TL_WRAP("fsetpos", b_fsetpos), TL_WRAP("fgetpos64", b_fgetpos), TL_WRAP("fsetpos64", b_fsetpos), TL_WRAP("fflush", b_fflush), TL_WRAP("fputc", b_fputc),
