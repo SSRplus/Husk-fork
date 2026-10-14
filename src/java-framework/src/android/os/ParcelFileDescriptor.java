@@ -37,9 +37,18 @@ public class ParcelFileDescriptor implements Parcelable, Closeable {
     public ParcelFileDescriptor dup() throws IOException { return new ParcelFileDescriptor(mFd, null, mFile); }
     public FileDescriptor getFileDescriptor() { return mFd; }
     public int getFd() { try { java.lang.reflect.Field d = FileDescriptor.class.getDeclaredField("descriptor"); d.setAccessible(true); return d.getInt(mFd); } catch (Exception e) { return -1; } }
-    public int detachFd() { return getFd(); }
+    /** What an app does with a descriptor it wants to keep (the picked firmware's, handed to native code as a path): the caller now owns it, so the stream that opened it must
+     *  never close it -- not when this object is closed, and not when the stream is collected. Holding the stream for good is how. */
+    private static final java.util.ArrayList<Closeable> sDetached = new java.util.ArrayList<>();
+    private volatile boolean mDetached;
+    public int detachFd() {
+        int fd = getFd();
+        mDetached = true;
+        if (mOwner != null) synchronized (sDetached) { sDetached.add(mOwner); }
+        return fd;
+    }
     public long getStatSize() { return mFile != null ? mFile.length() : -1; }
-    public void close() throws IOException { if (mOwner != null) mOwner.close(); }
+    public void close() throws IOException { if (mOwner != null && !mDetached) mOwner.close(); }
     public void closeWithError(String msg) throws IOException { close(); }
     public void checkError() throws IOException {}
     public int describeContents() { return CONTENTS_FILE_DESCRIPTOR; }
