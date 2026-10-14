@@ -326,6 +326,8 @@ final class TLUnityUIView: UIView, UIKeyInput {
         case .java:
             // Husk's Dalvik runtime: libcore, ICU and Husk's Java framework, carried in the app.
             husk_java_set_runtime((Bundle.main.resourcePath ?? "") + "/java-runtime", Float(contentScaleFactor))
+            // Vulkan for the Java apps whose native code draws with it (Vita3K+): MoltenVK, a framework of the app's own, as for the SDL and Unreal games.
+            if let fw = Bundle.main.privateFrameworksPath { husk_ue4_set_vulkan(fw + "/MoltenVK.framework/MoltenVK") }
             husk_java_set_night_mode(traitCollection.userInterfaceStyle == .dark ? 1 : 0)
             // The notch and the home indicator, in surface pixels: the app's window keeps its content out of them.
             if let inset = windowed ? UIEdgeInsets.zero : window?.safeAreaInsets {
