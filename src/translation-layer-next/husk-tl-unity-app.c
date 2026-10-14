@@ -282,6 +282,9 @@ static void *java_boot(void *arg)
     return NULL;
 }
 
+extern void (*tl_dialog_hook)(const char *title, const char *message);
+static const char *unity_vulkan_marker(void);
+static void unity_dialog_hook(const char *title, const char *message);
 static void *launch_thread(void *arg)
 {
     (void)arg;
@@ -407,6 +410,14 @@ static void *launch_thread(void *arg)
             .metal_layer = A.layer, .angle_egl = A.angle, .angle_gles = NULL, .frame_dir = NULL, .frame_every = 0,
         };
         tl_log_line("unity: starting %s as %s, %dx%d", A.apk, A.package, A.width, A.height);
+        /* Unity chooses between Vulkan and OpenGL ES from the list the game was built with; with no Vulkan here a game built for Vulkan alone stops with "Unable to
+         * initialize the Unity Engine". The first start is OpenGL ES, as before (it is what the games that offer both have always run on); when Unity says it could not
+         * start its graphics, the next start has Vulkan -- MoltenVK -- and when that fails too, the one after goes back to OpenGL ES. */
+        if (A.vulkan[0] && access(unity_vulkan_marker(), F_OK) == 0) {
+            tl_vk_configure(A.vulkan, NULL, 0);
+            tl_log_line("unity: Vulkan is on for this game (the last start could not initialise its graphics without it)");
+        }
+        tl_dialog_hook = unity_dialog_hook;
         tl_audio_install();
         ok = tl_unity_start(&cfg) && tl_unity_run();
     }
@@ -425,6 +436,27 @@ static void *launch_thread(void *arg)
      * (Geometry Dash 2.2081, a SIGTRAP from libmalloc right after the sound started). So it stays, asleep.
      */
     for (;;) pause();
+}
+
+extern void (*tl_dialog_hook)(const char *title, const char *message);
+static const char *unity_vulkan_marker(void)
+{
+    static char p[1100];
+    snprintf(p, sizeof(p), "%s/.husk-prefer-vulkan", A.data);
+    return p;
+}
+static void unity_dialog_hook(const char *title, const char *message)
+{
+    (void)title;
+    if (!message || (!strstr(message, "hardware requirements") && !strstr(message, "Unable to initialize"))) return;
+    if (access(unity_vulkan_marker(), F_OK) == 0) {
+        unlink(unity_vulkan_marker());
+        tl_log_line("unity: its graphics did not start with Vulkan either: the next start goes back to OpenGL ES");
+    } else {
+        int fd = open(unity_vulkan_marker(), O_WRONLY | O_CREAT, 0644);
+        if (fd >= 0) close(fd);
+        tl_log_line("unity: its graphics did not start: close the game and open it again, and it will use Vulkan");
+    }
 }
 
 static bool launch(int engine, const char *apk, const char *data_dir, void *metal_layer, int width, int height,

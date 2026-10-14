@@ -553,10 +553,12 @@ static void Builder_create(tl_jcall *c)
     set_str(d, "message", S(tl_jni_get_field(c->self, "message", "Ljava/lang/String;").l));
     c->ret = vl(d);
 }
+void (*tl_dialog_hook)(const char *title, const char *message);      /* an engine that wants to know what the app tells its user */
 static void Dialog_show(tl_jcall *c)
 {
-    tl_log_line("DIALOG \"%s\": %s", S(tl_jni_get_field(c->self, "title", "Ljava/lang/String;").l),
-                S(tl_jni_get_field(c->self, "message", "Ljava/lang/String;").l));
+    const char *title = S(tl_jni_get_field(c->self, "title", "Ljava/lang/String;").l), *msg = S(tl_jni_get_field(c->self, "message", "Ljava/lang/String;").l);
+    tl_log_line("DIALOG \"%s\": %s", title, msg);
+    if (tl_dialog_hook) tl_dialog_hook(title, msg);
 }
 static void Builder_show(tl_jcall *c)
 {
