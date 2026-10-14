@@ -529,7 +529,7 @@ tl_dual_mapping *tl_find_stikdebug_prewarmed(void)
     /* Ensure prewarm has been called in case this attempt ran before QEMU. */
     bool (*prewarm_fn)(size_t) = (bool (*)(size_t))dlsym(RTLD_DEFAULT, "husk_ios_jit_prewarm");
     if (prewarm_fn) {
-        prewarm_fn(256 * 1024 * 1024);
+        prewarm_fn((size_t)1024 * 1024 * 1024);      /* a JIT's code cache (Vita3K+'s dynarmic takes 128 MiB, twice) beside the libraries and the stubs: 256 MiB ran out */
     }
 
     void *fn = dlsym(RTLD_DEFAULT, "husk_ios_jit_prewarm");
