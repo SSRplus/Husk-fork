@@ -172,7 +172,7 @@ static void *heartbeat_thread(void *arg)
         unsigned long f = engine_frames();
 #if TARGET_OS_IPHONE
         { static long cw_last; long cw = tl_codewrite_count();
-          tl_log_line("unity: alive: %lu frames (+%lu), %zu MiB left before jetsam, %ld stores into code emulated (+%ld)", f, f - last, os_proc_available_memory() >> 20, cw, cw - cw_last);
+          tl_log_line("unity: alive: %lu frames (+%lu), %zu MiB left before jetsam, %ld stores into code emulated (+%ld), %ld code-cache page flips", f, f - last, os_proc_available_memory() >> 20, cw, cw - cw_last, tl_codewrite_flips());
           cw_last = cw; }
 #else
         tl_log_line("unity: alive: %lu frames (+%lu)", f, f - last);
@@ -344,6 +344,8 @@ static void *launch_thread(void *arg)
         ok = tl_gm_start(&cfg) && tl_gm_run();
     } else if (A.engine == ENGINE_JAVA) {
         tl_log_line("java: starting %s as %s, %dx%d (runtime %s)", A.apk, A.package, A.width, A.height, g_java_root);
+        /* a Java app's native code may draw with Vulkan (Vita3K+ does): MoltenVK, when the app named it -- otherwise it is told libvulkan.so does not exist */
+        if (A.vulkan[0]) tl_vk_configure(A.vulkan, NULL, 0);
         ok = false;
         if (g_java_root[0]) {
             pthread_attr_t at; pthread_attr_init(&at); pthread_attr_setstacksize(&at, 64u << 20); pthread_attr_set_qos_class_np(&at, QOS_CLASS_USER_INTERACTIVE, 0);

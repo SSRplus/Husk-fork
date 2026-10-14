@@ -108,8 +108,65 @@ static char *es31_downgrade(const char *src, size_t n, es31_bind *rec, int *nrec
     return out;
 }
 
+/*
+ * OpenGL ES 3 gives sampler2DArray (and sampler3D) no default precision, so a shader that uses one without a `precision` statement for it is an error to a strict
+ * compiler -- ANGLE's: "'sampler2DArray' : No precision specified" -- where Android's drivers let it pass. Vita3K+'s overlay shader is one; the overlay was switched off. The
+ * statement is added after the #version (and #extension) lines when the shader has none for the type.
+ */
+static char *sampler_precision_fix(const char *src, size_t n)
+{
+    static const char *const types[] = { "sampler2DArray", "sampler3D", NULL };
+    char *cur = NULL;
+    for (int t = 0; types[t]; t++) {
+        const char *s = cur ? cur : src; size_t sn = cur ? strlen(cur) : n;
+        if (!strnstr(s, types[t], sn)) continue;
+        bool have = false;
+        for (const char *p = s; (p = strnstr(p, "precision", sn - (size_t)(p - s))) != NULL; p += 9) {
+            const char *semi = memchr(p, ';', sn - (size_t)(p - s));
+            size_t l = semi ? (size_t)(semi - p) : sn - (size_t)(p - s);
+            if (strnstr(p, types[t], l)) { have = true; break; }
+        }
+        if (have) continue;
+        const char *v = strnstr(s, "#version", sn);
+        if (!v) continue;
+        const char *eol = memchr(v, '\n', sn - (size_t)(v - s));
+        if (!eol || !strnstr(v, " es", (size_t)(eol - v))) continue;       /* desktop GLSL has a default; only ES needs this */
+        const char *at = eol + 1;
+        while (at < s + sn && !strncmp(at, "#extension", 10)) { const char *e = memchr(at, '\n', sn - (size_t)(at - s)); if (!e) break; at = e + 1; }
+        char add[64]; int al = snprintf(add, sizeof(add), "precision highp %s;\n", types[t]);
+        char *out = malloc(sn + (size_t)al + 1);
+        if (!out) continue;
+        memcpy(out, s, (size_t)(at - s)); memcpy(out + (at - s), add, (size_t)al); memcpy(out + (at - s) + al, at, sn - (size_t)(at - s)); out[sn + (size_t)al] = 0;
+        free(cur); cur = out;
+    }
+    return cur;
+}
+
 static void (*r_glShaderSource)(unsigned, int, const char *const *, const int *);
+static void w_glShaderSource_inner(unsigned sh, int count, const char *const *str, const int *len);
 static void w_glShaderSource(unsigned sh, int count, const char *const *str, const int *len)
+{
+    if (count > 0 && str) {
+        size_t total = 0; bool any = false;
+        for (int i = 0; i < count; i++) if (str[i]) {
+            size_t l = len && len[i] >= 0 ? (size_t)len[i] : strlen(str[i]);
+            total += l;
+            if (strnstr(str[i], "sampler2DArray", l) || strnstr(str[i], "sampler3D", l)) any = true;
+        }
+        if (any) {
+            char *cat = malloc(total + 1); size_t k = 0;
+            if (cat) {
+                for (int i = 0; i < count; i++) if (str[i]) { size_t l = len && len[i] >= 0 ? (size_t)len[i] : strlen(str[i]); memcpy(cat + k, str[i], l); k += l; }
+                cat[k] = 0;
+                char *fixed = sampler_precision_fix(cat, k);
+                free(cat);
+                if (fixed) { const char *one = fixed; int ol = (int)strlen(fixed); w_glShaderSource_inner(sh, 1, &one, &ol); free(fixed); return; }
+            }
+        }
+    }
+    w_glShaderSource_inner(sh, count, str, len);
+}
+static void w_glShaderSource_inner(unsigned sh, int count, const char *const *str, const int *len)
 {
     if (!g_es31_shim || count <= 0 || !str) { r_glShaderSource(sh, count, str, len); return; }
     size_t total = 0;

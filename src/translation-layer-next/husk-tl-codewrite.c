@@ -25,6 +25,9 @@
 #include <stdint.h>
 #include <string.h>
 #include <sys/ucontext.h>
+#include <sys/mman.h>
+#include <stdlib.h>
+#include <libkern/OSCacheControl.h>
 
 #include "husk-tl-bionic.h"
 #include "husk-tl-xmem.h"
@@ -174,6 +177,71 @@ static bool emulate(mcontext_t mc)
     return false;
 }
 
+/* ---- flip-on-fault code caches (see the header) */
+#define TOG_MAX 4
+#define TOG_PAGE 16384u
+static struct { uintptr_t base; size_t len; volatile uint8_t *rx; } g_tog[TOG_MAX];      /* rx[page]: 1 while that page is executable, 0 while writable */
+static volatile long g_flips;
+long tl_codewrite_flips(void) { return g_flips; }
+
+static int tog_find(uintptr_t a)
+{
+    for (int i = 0; i < TOG_MAX; i++) if (g_tog[i].base && a >= g_tog[i].base && a < g_tog[i].base + g_tog[i].len) return i;
+    return -1;
+}
+bool tl_codewrite_toggle_contains(const void *addr) { return tog_find((uintptr_t)addr) >= 0; }
+
+bool tl_codewrite_toggle_alloc(size_t len, void **out)
+{
+    int slot = -1;
+    for (int i = 0; i < TOG_MAX; i++) if (!g_tog[i].base) { slot = i; break; }
+    if (slot < 0 || !len) return false;
+    len = (len + TOG_PAGE - 1) & ~(size_t)(TOG_PAGE - 1);
+    void *p = mmap(NULL, len, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+    if (p == MAP_FAILED) return false;
+    uint8_t *state = calloc(len / TOG_PAGE, 1);
+    if (!state) { munmap(p, len); return false; }
+    g_tog[slot].rx = state; g_tog[slot].len = len; g_tog[slot].base = (uintptr_t)p;
+    *out = p;
+    return true;
+}
+
+bool tl_codewrite_toggle_free(void *addr, size_t len)
+{
+    int i = tog_find((uintptr_t)addr);
+    if (i < 0) return false;
+    if ((uintptr_t)addr == g_tog[i].base && len >= g_tog[i].len) {
+        uintptr_t b = g_tog[i].base; size_t l = g_tog[i].len; volatile uint8_t *st = g_tog[i].rx;
+        g_tog[i].base = 0;
+        munmap((void *)b, l);
+        free((void *)st);
+    }
+    return true;                                                    /* a partial unmap of a code cache: kept */
+}
+
+/* The fault is in one of those caches: flip the page and let the instruction run again. */
+static bool toggle_fault(ucontext_t *u, siginfo_t *info)
+{
+    uintptr_t fa = (uintptr_t)info->si_addr;
+    int i = tog_find(fa);
+    if (i < 0) return false;
+    uintptr_t pc = u->uc_mcontext->__ss.__pc;
+    uintptr_t pg = fa & ~(uintptr_t)(TOG_PAGE - 1);
+    size_t idx = (pg - g_tog[i].base) / TOG_PAGE;
+    if (pc == fa) {                                                 /* running code in a page that is writable */
+        if (g_tog[i].rx[idx]) return false;                         /* already executable and it still faulted: not ours */
+        sys_icache_invalidate((void *)pg, TOG_PAGE);
+        if (mprotect((void *)pg, TOG_PAGE, PROT_READ | PROT_EXEC) != 0) return false;
+        g_tog[i].rx[idx] = 1;
+    } else {                                                        /* a store into a page that is executable */
+        if (!g_tog[i].rx[idx]) return false;
+        if (mprotect((void *)pg, TOG_PAGE, PROT_READ | PROT_WRITE) != 0) return false;
+        g_tog[i].rx[idx] = 0;
+    }
+    g_flips++;
+    return true;
+}
+
 static void chain(struct sigaction *prev, int sig, siginfo_t *info, void *uc)
 {
     if ((prev->sa_flags & SA_SIGINFO) && prev->sa_sigaction) { prev->sa_sigaction(sig, info, uc); return; }
@@ -184,6 +252,7 @@ static void chain(struct sigaction *prev, int sig, siginfo_t *info, void *uc)
 static void on_fault(int sig, siginfo_t *info, void *uc)
 {
     ucontext_t *u = uc;
+    if (g_on && info && toggle_fault(u, info)) return;
     if (g_on && info && tl_xmem_is_rx(info->si_addr) && emulate(u->uc_mcontext)) {
         u->uc_mcontext->__ss.__pc += 4;
         g_emulated++;

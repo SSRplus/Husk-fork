@@ -170,6 +170,18 @@ void tl_set_system_fonts_dir(const char *dir) { snprintf(g_sysfonts, sizeof(g_sy
 const char *tl_path_resolve(const char *path, char *buf, size_t n)
 {
     if (!path) return path;
+    /* /proc/self/fd/N: how an app turns a descriptor (a picked file's, from ContentResolver.openFileDescriptor) into a path a native library can open. There is no /proc here:
+     * the descriptor's own file is the answer. */
+    if (!strncmp(path, "/proc/", 6)) {
+        const char *f = strstr(path, "/fd/");
+        if (f) {
+            char *end; long fd = strtol(f + 4, &end, 10);
+            if (end != f + 4 && *end == 0 && fd >= 0) {
+                char real[1024];
+                if (fcntl((int)fd, F_GETPATH, real) == 0) { snprintf(buf, n, "%s", real); return buf; }
+            }
+        }
+    }
     if (g_sysfonts[0]) {
         if (!strncmp(path, "/system/fonts", 13) && (path[13] == 0 || path[13] == '/')) { snprintf(buf, n, "%s/fonts%s", g_sysfonts, path + 13); return buf; }
         if (!strcmp(path, "/system/etc/fonts.xml") || !strcmp(path, "/system/etc/font_fallback.xml")) { snprintf(buf, n, "%s/etc%s", g_sysfonts, path + 11); return buf; }
@@ -701,7 +713,13 @@ static long b_readlink(const char *p, char *buf, size_t n)
         memcpy(buf, exe, l);
         return (long)l;
     }
-    char b[1024]; TL_ERRNO_BEGIN(); long r = readlink(tl_path_resolve(p, b, sizeof(b)), buf, n); TL_ERRNO_END(); return r;
+    char b[1024];
+    if (!strncmp(p, "/proc/", 6) && strstr(p, "/fd/") && tl_path_resolve(p, b, sizeof(b)) == b) {      /* a descriptor's link: the file it is open on */
+        size_t l = strlen(b); if (l > n) l = n;
+        memcpy(buf, b, l);
+        return (long)l;
+    }
+    TL_ERRNO_BEGIN(); long r = readlink(tl_path_resolve(p, b, sizeof(b)), buf, n); TL_ERRNO_END(); return r;
 }
 static char *b_realpath(const char *p, char *out) { char b[1024]; TL_ERRNO_BEGIN(); char *r = realpath(tl_path_resolve(p, b, sizeof(b)), out); TL_ERRNO_END(); return r; }
 static char *b_getcwd(char *buf, size_t n) { TL_ERRNO_BEGIN(); char *r = getcwd(buf, n); TL_ERRNO_END(); return r; }
@@ -1146,6 +1164,15 @@ static void *hp_mmap_fixed_anon(void *addr, size_t len, int prot)
 }
 static void *b_mmap(void *addr, size_t len, int prot, int flags, int fd, long off)
 {
+    /* A JIT's code cache (dynarmic's 128 MiB under Vita3K+): real memory whose pages flip between writable and executable as they are used, where the process may
+     * run code of its own; on a phone that lets only the JIT region execute it comes from the region below, as before. */
+    if ((prot & PROT_EXEC) && (flags & 0x20) && !(flags & 0x10) && len >= (4u << 20) && tl_codewrite_enabled() && !phone_jit()) {
+        void *p;
+        if (tl_codewrite_toggle_alloc(len, &p)) {
+            tl_log_line("mm: %#zx bytes of code cache for the guest at %p (pages flip between writable and executable)", len, p);
+            return p;
+        }
+    }
     /* A hooking library's trampolines (Geode): executable memory is a piece of the JIT region, written through the other view. */
     if ((prot & PROT_EXEC) && (flags & 0x20) && !(flags & 0x10) && tl_codewrite_enabled()) {
         uint8_t *rx, *rw;
@@ -1208,6 +1235,7 @@ static void *b_mmap(void *addr, size_t len, int prot, int flags, int fd, long of
 }
 static int b_munmap(void *a, size_t l)
 {
+    if (tl_codewrite_toggle_free(a, l)) return 0;
     if (tl_xmem_contains(a)) return 0;                       /* JIT memory handed out above: kept, as the region only grows */
     if (hp_ragged((uintptr_t)a, l)) {                        /* a 4 KiB-block guest: give back only the whole pages inside the range */
         uintptr_t is = ((uintptr_t)a + TL_HP - 1) & ~(TL_HP - 1), ie = ((uintptr_t)a + l) & ~(TL_HP - 1);
@@ -1235,6 +1263,7 @@ static int b_mprotect(void *a, size_t l, int prot)
 {
     /* Code a hooking library is about to patch: its permissions stay as they are, and its stores are carried out through
      * the writable view as they fault (husk-tl-codewrite.c). */
+    if (tl_codewrite_enabled() && tl_codewrite_toggle_contains(a)) return 0;      /* a code cache: its pages are flipped as they are used */
     if (tl_codewrite_enabled() && tl_xmem_contains(a)) { mm_trace("mprotect", a, l, prot, 0); return 0; }
     if (prot & PROT_EXEC) {
         /* the host's own code (a guest that patches "the linker", which here is Apple's): never touched */
