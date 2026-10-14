@@ -1,7 +1,5 @@
 # Husk
 
-[![Husk Downloads](https://img.shields.io/github/downloads/leviidev/husk/total?style=for-the-badge&color=5865F2&labelColor=111111)](https://github.com/leviidev/husk/releases)
-
 Android apps and games on your iPhone.
 
 Add an APK, tap it, and it opens full-screen. Husk runs it in one of two ways,
