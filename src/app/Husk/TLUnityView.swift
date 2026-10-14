@@ -346,7 +346,10 @@ final class TLUnityUIView: UIView, UIKeyInput {
             }
             started = husk_flutter_launch(apk, dataDir, layerPtr, Int32(width), Int32(height), angle, ca)
         case .minecraft: started = husk_gameactivity_launch(apk, dataDir, layerPtr, Int32(width), Int32(height), angle, ca)
-        case .unity: started = husk_unity_launch(apk, dataDir, layerPtr, Int32(width), Int32(height), angle, ca)
+        case .unity:
+            // MoltenVK for the Unity games that cannot start on OpenGL ES alone: the engine turns it on for the next start once Unity says its graphics did not initialise.
+            if let fw = Bundle.main.privateFrameworksPath { husk_ue4_set_vulkan(fw + "/MoltenVK.framework/MoltenVK") }
+            started = husk_unity_launch(apk, dataDir, layerPtr, Int32(width), Int32(height), angle, ca)
         }
         if !started { HuskLog.log("tl", "native: launch refused") }
     }
