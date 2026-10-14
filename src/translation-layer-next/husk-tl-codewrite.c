@@ -26,6 +26,7 @@
 #include <string.h>
 #include <sys/ucontext.h>
 #include <sys/mman.h>
+#include <unistd.h>
 #include <stdlib.h>
 #include <libkern/OSCacheControl.h>
 
@@ -191,8 +192,23 @@ static int tog_find(uintptr_t a)
 }
 bool tl_codewrite_toggle_contains(const void *addr) { return tog_find((uintptr_t)addr) >= 0; }
 
+/* Whether this process may run memory of its own: iOS marks a process that has a debugger attached (or a jailbreak that says so) CS_DEBUGGED, and only then does
+ * an mprotect to executable on ordinary memory mean anything. */
+extern int csops(int pid, unsigned int ops, void *useraddr, size_t usersize);
+static bool can_run_own_code(void)
+{
+    static int known = -1;
+    if (known < 0) {
+        unsigned int flags = 0;
+        known = csops(getpid(), 0 /* CS_OPS_STATUS */, &flags, sizeof(flags)) == 0 && (flags & 0x10000000u /* CS_DEBUGGED */) ? 1 : 0;
+        tl_log_line("codewrite: this process %s run code in memory of its own (code signing status flag CS_DEBUGGED %s)", known ? "may" : "may not", known ? "set" : "not set");
+    }
+    return known == 1;
+}
+
 bool tl_codewrite_toggle_alloc(size_t len, void **out)
 {
+    if (!can_run_own_code()) return false;
     int slot = -1;
     for (int i = 0; i < TOG_MAX; i++) if (!g_tog[i].base) { slot = i; break; }
     if (slot < 0 || !len) return false;

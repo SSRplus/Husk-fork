@@ -1166,7 +1166,7 @@ static void *b_mmap(void *addr, size_t len, int prot, int flags, int fd, long of
 {
     /* A JIT's code cache (dynarmic's 128 MiB under Vita3K+): real memory whose pages flip between writable and executable as they are used, where the process may
      * run code of its own; on a phone that lets only the JIT region execute it comes from the region below, as before. */
-    if ((prot & PROT_EXEC) && (flags & 0x20) && !(flags & 0x10) && len >= (4u << 20) && tl_codewrite_enabled() && !phone_jit()) {
+    if ((prot & PROT_EXEC) && (flags & 0x20) && !(flags & 0x10) && len >= (4u << 20) && tl_codewrite_enabled()) {
         void *p;
         if (tl_codewrite_toggle_alloc(len, &p)) {
             tl_log_line("mm: %#zx bytes of code cache for the guest at %p (pages flip between writable and executable)", len, p);
@@ -1178,7 +1178,7 @@ static void *b_mmap(void *addr, size_t len, int prot, int flags, int fd, long of
         uint8_t *rx, *rw;
         size_t n = (len + TL_XMEM_PAGE - 1) & ~(size_t)(TL_XMEM_PAGE - 1);
         if (tl_xmem_alloc(n, &rx, &rw)) {
-            memset(rw, 0, n);
+            if (n < (1u << 20)) memset(rw, 0, n);      /* the region is fresh, zeroed memory that is never handed out twice: clearing 128 MiB would only make all of it resident */
             tl_log_line("mm: %#zx bytes of executable memory for the guest at %p", n, (void *)rx);
             return rx;
         }
