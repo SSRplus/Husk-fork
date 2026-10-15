@@ -454,11 +454,32 @@ static void System_load(tl_jcall *c)
 }
 static void System_loadLibrary(tl_jcall *c)
 {
-    char base[200]; snprintf(base, sizeof(base), "lib%s.so", S(c->args[0].l));
-    if (!load_native_library(base)) {
-        char msg[300]; snprintf(msg, sizeof(msg), "dlopen failed: library \"%s\" not found", base);
-        tl_jni_throw("java/lang/UnsatisfiedLinkError", msg);
+    const char *name = S(c->args[0].l);
+    char base[200], alternate[200];
+    snprintf(base, sizeof(base), "lib%s.so", name ? name : "");
+    if (load_native_library(base)) return;
+
+    /*
+     * Android's System.loadLibrary normally receives a bare name, but some
+     * Unity/Burst builds pass a name which already starts with "lib". Retain
+     * the standard lookup first, then retry the literal filename implied by
+     * that argument. This avoids asking for liblib_*.so when the APK actually
+     * contains lib_*.so, without changing normal library lookup order.
+     */
+    if (name && strncmp(name, "lib", 3) == 0) {
+        size_t len = strlen(name);
+        bool has_so = len >= 3 && strcmp(name + len - 3, ".so") == 0;
+        snprintf(alternate, sizeof(alternate), "%s%s", name, has_so ? "" : ".so");
+        if (strcmp(alternate, base) != 0 && load_native_library(alternate)) {
+            tl_log_line("jni: System.loadLibrary(\"%s\") resolved through compatibility fallback to %s",
+                        name, alternate);
+            return;
+        }
     }
+
+    char msg[300];
+    snprintf(msg, sizeof(msg), "dlopen failed: library \"%s\" not found", base);
+    tl_jni_throw("java/lang/UnsatisfiedLinkError", msg);
 }
 static void System_getProperty(tl_jcall *c) { const char *k = S(c->args[0].l); const char *v = !strcmp(k, "os.arch") ? "aarch64" : !strcmp(k, "http.agent") ? "Dalvik/2.1.0 (Linux; U; Android 14; Pixel 8)" : NULL; c->ret = vl(v ? STR(v) : NULL); }
 static void System_currentTimeMillis(tl_jcall *c) { struct timespec ts; clock_gettime(CLOCK_REALTIME, &ts); jvalue v; v.j = (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000; c->ret = v; }
