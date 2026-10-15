@@ -293,20 +293,27 @@ static const char *unity_vulkan_marker(void);
  *   0  normal Unity API selection (OpenGL ES unless the manifest/preference requires Vulkan; plain descriptor bindings if Vulkan is selected)
  *   1  conservative Vulkan through MoltenVK (serial submits, no prefilled command buffers, no fast math, callback semaphores)
  *   2  force the OpenGL ES path through ANGLE (do not expose/configure Vulkan for this launch)
- * When the device is lost at level L the file is set to L+1 (2 at most), so opening the game again moves down the ladder. If OpenGL ES cannot start either
- * (for example, a game build that truly contains Vulkan only), the dialog hook sets the file back to 0 so the user is not stuck on an unusable fallback. */
+ * When the device is lost at level L the file is set to L+1 (2 at most), so opening the game again moves down the ladder.
+ *
+ * Vulkan-only games (manifest requires android.hardware.vulkan.version) cannot start on OpenGL ES at all. Escalating them to
+ * level 2 produces a black "hardware requirements" screen, then the dialog hook used to reset to 0 and the user looped
+ * crash → black → crash (Sea of Stars on A11). For those games we never leave level 1: stay on the conservative Vulkan path. */
 static const char *gfx_level_path(void)
 {
     static char p[1100];
     snprintf(p, sizeof(p), "%s/.husk-gfx-level", A.data);
     return p;
 }
+static int gfx_is_a11(void)
+{
+    char m[64] = "";
+    size_t n = sizeof(m);
+    return sysctlbyname("hw.machine", m, &n, NULL, 0) == 0 && strncmp(m, "iPhone10,", 9) == 0;
+}
 static int gfx_level_default(void)
 {
     /* Apple A11 (iPhone 8, 8 Plus, X) is Metal family 4: the first level that has worked there is the conservative one, so start on it. */
-    char m[64] = "";
-    size_t n = sizeof(m);
-    if (sysctlbyname("hw.machine", m, &n, NULL, 0) == 0 && strncmp(m, "iPhone10,", 9) == 0) return 1;
+    if (gfx_is_a11()) return 1;
     return 0;
 }
 static int gfx_level_read(void)
@@ -349,9 +356,19 @@ static void gfx_level_write(int l)
     tl_log_line("unity: persisted graphics level %d to %s", l, gfx_level_path());
 }
 static int g_gfx_level;
+static int g_vulkan_required;   /* 1 when the APK's manifest requires Vulkan (GLES fallback is useless) */
 static void unity_vk_lost(void)
 {
-    int next = g_gfx_level < 2 ? g_gfx_level + 1 : 2;
+    int next;
+    if (g_vulkan_required) {
+        /* GLES cannot start this game. Keep the conservative Vulkan path so the next launch is not a black screen. */
+        next = 1;
+        gfx_level_write(next);
+        tl_log_line("unity: the GPU device was lost at graphics level %d; game requires Vulkan — staying on level 1 (conservative Vulkan), not OpenGL ES",
+                    g_gfx_level);
+        return;
+    }
+    next = g_gfx_level < 2 ? g_gfx_level + 1 : 2;
     gfx_level_write(next);
     tl_log_line("unity: the GPU device was lost at graphics level %d; the next start uses level %d (%s)", g_gfx_level, next,
                 next == 1 ? "Vulkan, conservative" : "OpenGL ES");
@@ -488,31 +505,47 @@ static void *launch_thread(void *arg)
          * start its graphics, the next start has Vulkan -- MoltenVK -- and when that fails too, the one after goes back to OpenGL ES. */
         if (A.vulkan[0]) {
             int tl_manifest_vulkan_required(const char *apk);
-            const char *why = tl_manifest_vulkan_required(A.apk) ? "its manifest says it needs Vulkan"
+            g_vulkan_required = tl_manifest_vulkan_required(A.apk) ? 1 : 0;
+            const char *why = g_vulkan_required ? "its manifest says it needs Vulkan"
                             : access(unity_vulkan_marker(), F_OK) == 0 ? "the last start could not initialise its graphics without it" : NULL;
             g_gfx_level = gfx_level_read();
+            /* Vulkan-only builds cannot use GLES. A persisted level 2 from an older Husk would black-screen them;
+             * clamp back to conservative Vulkan so the user is not stuck. */
+            if (why && g_vulkan_required && g_gfx_level >= 2) {
+                tl_log_line("unity: graphics level was %d but game requires Vulkan — clamping to level 1 (conservative Vulkan)", g_gfx_level);
+                g_gfx_level = 1;
+                gfx_level_write(1);
+            }
             if (why && g_gfx_level >= 2) {
                 tl_log_line("unity: graphics level 2: OpenGL ES (the GPU device was lost on Vulkan twice); %s", why);
             } else if (why) {
                 /* MoltenVK on this phone's GPU (Apple A11: argument buffers of the first tier) faulted on the descriptor sets Unity builds when they were bound through Metal
                  * argument buffers ("GPU Address Fault ... PageFault", then a lost device after ~1100 frames of Sea of Stars): the plain bindings are what Unity's games use elsewhere. */
-                setenv("MVK_CONFIG_USE_METAL_ARGUMENT_BUFFERS", "0", 0);
-                if (g_gfx_level >= 1) {
-                    /* Argument buffers off was not enough on the A11, so the page fault is not the descriptor path. What is left is how MoltenVK orders and overlaps
-                     * work; each of these is its most conservative form, and each can still be overridden from the environment (overwrite 0). */
-                    setenv("MVK_CONFIG_SYNCHRONOUS_QUEUE_SUBMITS", "1", 0);
-                    setenv("MVK_CONFIG_PREFILL_METAL_COMMAND_BUFFERS", "0", 0);
-                    setenv("MVK_CONFIG_FAST_MATH_ENABLED", "0", 0);
-                    setenv("MVK_CONFIG_SEMAPHORE_SUPPORT_STYLE", "4", 0);   /* MVK_CONFIG_VK_SEMAPHORE_SUPPORT_STYLE_CALLBACK */
+                setenv("MVK_CONFIG_USE_METAL_ARGUMENT_BUFFERS", "0", 1);
+                /* On A11 always use the conservative queue path for Vulkan-required games, even at level 0:
+                 * a single page fault still takes the process down and there is no usable GLES fallback. */
+                if (g_gfx_level >= 1 || (g_vulkan_required && gfx_is_a11())) {
+                    setenv("MVK_CONFIG_SYNCHRONOUS_QUEUE_SUBMITS", "1", 1);
+                    setenv("MVK_CONFIG_PREFILL_METAL_COMMAND_BUFFERS", "0", 1);
+                    setenv("MVK_CONFIG_FAST_MATH_ENABLED", "0", 1);
+                    setenv("MVK_CONFIG_SEMAPHORE_SUPPORT_STYLE", "4", 1);   /* MVK_CONFIG_VK_SEMAPHORE_SUPPORT_STYLE_CALLBACK */
                     /* Do not resume a Metal device after a real GPU page fault. The crash log
                      * shows MoltenVK resuming after kIOGPUCommandBufferCallbackErrorPageFault,
                      * then reporting DEVICE_LOST later. Stop issuing more work and persist the
-                     * GLES fallback as soon as Vulkan surfaces DEVICE_LOST. */
-                    setenv("MVK_CONFIG_RESUME_LOST_DEVICE", "0", 0);
+                     * fallback as soon as Vulkan surfaces DEVICE_LOST. */
+                    setenv("MVK_CONFIG_RESUME_LOST_DEVICE", "0", 1);
+                    /* Extra A11 mitigations: fewer concurrent Metal command buffers and no heap
+                     * allocations reduce the chance of the address fault seen with Sea of Stars. */
+                    if (gfx_is_a11()) {
+                        setenv("MVK_CONFIG_MAX_ACTIVE_METAL_COMMAND_BUFFERS_PER_QUEUE", "64", 1);
+                        setenv("MVK_CONFIG_USE_MTLHEAP", "0", 1);
+                        setenv("MVK_CONFIG_USE_COMMAND_POOLING", "0", 1);
+                    }
                 }
                 tl_vk_lost_hook = unity_vk_lost;
                 tl_vk_configure(A.vulkan, NULL, 0);
-                tl_log_line("unity: Vulkan is on for this game (%s), graphics level %d", why, g_gfx_level);
+                tl_log_line("unity: Vulkan is on for this game (%s), graphics level %d%s", why, g_gfx_level,
+                            gfx_is_a11() ? " (A11 conservative)" : "");
             }
         }
         tl_dialog_hook = unity_dialog_hook;
@@ -548,8 +581,14 @@ static void unity_dialog_hook(const char *title, const char *message)
     (void)title;
     if (!message || (!strstr(message, "hardware requirements") && !strstr(message, "Unable to initialize"))) return;
     if (g_gfx_level >= 2) {
-        gfx_level_write(0);
-        tl_log_line("unity: OpenGL ES did not start this game either (it needs Vulkan): the next start goes back to Vulkan");
+        /* GLES failed. If the game truly needs Vulkan, lock onto conservative Vulkan (level 1)
+         * instead of level 0 — otherwise the next launch can pick a less-safe path and crash again
+         * (Sea of Stars on A11 looped black screen ↔ crash). */
+        int next = g_vulkan_required ? 1 : 0;
+        gfx_level_write(next);
+        tl_log_line("unity: OpenGL ES did not start this game either%s: the next start uses level %d (%s)",
+                    g_vulkan_required ? " (it needs Vulkan)" : "",
+                    next, next == 1 ? "Vulkan, conservative" : "default API selection");
         return;
     }
     if (access(unity_vulkan_marker(), F_OK) == 0) {
