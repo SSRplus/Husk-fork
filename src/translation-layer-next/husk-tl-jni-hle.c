@@ -103,6 +103,55 @@ static void File_mkdir(tl_jcall *c) { c->ret = vz(mkdir(file_path(c->self), 0755
 static void File_delete(tl_jcall *c) { c->ret = vz(unlink(file_path(c->self)) == 0 || rmdir(file_path(c->self)) == 0); }
 static void File_length(tl_jcall *c) { struct stat st; jvalue v; v.j = stat(file_path(c->self), &st) == 0 ? st.st_size : 0; c->ret = v; }
 static void File_toString(tl_jcall *c) { c->ret = vl(STR(file_path(c->self))); }
+static void File_setReadOnly(tl_jcall *c)
+{
+    /* java.io.File.setReadOnly() changes the file's mode; returning success without
+     * doing so breaks asset/config migration code which verifies the result. */
+    c->ret = vz(chmod(file_path(c->self), 0444) == 0);
+}
+
+/* ------------------------------------------------------- java.io.FileOutputStream */
+static void FOS_open(tl_jcall *c, const char *path, bool append)
+{
+    FILE *f = fopen(path, append ? "ab" : "wb");
+    if (!f) {
+        tl_jni_throw(errno == ENOENT ? "java/io/FileNotFoundException" : "java/io/IOException", path);
+        c->self->native = NULL;
+        return;
+    }
+    c->self->native = f;
+}
+static void FOS_init_file(tl_jcall *c) { FOS_open(c, file_path(c->args[0].l), false); }
+static void FOS_init_file_append(tl_jcall *c) { FOS_open(c, file_path(c->args[0].l), c->args[1].z != 0); }
+static void FOS_init_string(tl_jcall *c) { FOS_open(c, S(c->args[0].l), false); }
+static void FOS_init_string_append(tl_jcall *c) { FOS_open(c, S(c->args[0].l), c->args[1].z != 0); }
+static void FOS_write_range(tl_jcall *c)
+{
+    FILE *f = c->self ? c->self->native : NULL;
+    jobj *a = c->args[0].l;
+    int off = c->args[1].i, len = c->args[2].i;
+    if (!f || !a || off < 0 || len < 0 || (uint64_t)off + (uint64_t)len > a->arr.len) {
+        tl_jni_throw("java/io/IOException", "FileOutputStream is closed or invalid write range");
+        return;
+    }
+    if (len && fwrite((const uint8_t *)a->arr.data + off, 1, (size_t)len, f) != (size_t)len)
+        tl_jni_throw("java/io/IOException", "FileOutputStream write failed");
+}
+static void FOS_write_all(tl_jcall *c)
+{
+    FILE *f = c->self ? c->self->native : NULL;
+    jobj *a = c->args[0].l;
+    if (!f || !a) { tl_jni_throw("java/io/IOException", "FileOutputStream is closed or invalid write"); return; }
+    if (a->arr.len && fwrite(a->arr.data, 1, a->arr.len, f) != a->arr.len)
+        tl_jni_throw("java/io/IOException", "FileOutputStream write failed");
+}
+static void FOS_close(tl_jcall *c)
+{
+    FILE *f = c->self ? c->self->native : NULL;
+    if (!f) return;
+    c->self->native = NULL;
+    if (fclose(f) != 0) tl_jni_throw("java/io/IOException", "FileOutputStream close failed");
+}
 
 /* --------------------------------------------------------------- java.lang */
 
@@ -868,7 +917,7 @@ static const struct { const char *name, *super; } k_classes[] = {
     { "java/lang/Error", "java/lang/Throwable" }, { "java/lang/NoClassDefFoundError", "java/lang/Error" },
     { "java/lang/NoSuchMethodError", "java/lang/Error" }, { "java/lang/NoSuchFieldError", "java/lang/Error" },
     { "java/lang/NullPointerException", "java/lang/Exception" }, { "java/lang/RuntimeException", "java/lang/Exception" },
-    { "java/io/File", "java/lang/Object" }, { "java/lang/reflect/Proxy", "java/lang/Object" },
+    { "java/io/File", "java/lang/Object" }, { "java/io/FileOutputStream", "java/lang/Object" }, { "java/io/IOException", "java/lang/Exception" }, { "java/lang/reflect/Proxy", "java/lang/Object" },
     { "java/nio/DirectByteBuffer", "java/lang/Object" },
     { "android/content/Context", "java/lang/Object" }, { "android/content/ContextWrapper", "android/content/Context" },
     { "android/view/ContextThemeWrapper", "android/content/ContextWrapper" }, { "android/app/Activity", "android/view/ContextThemeWrapper" },
@@ -961,6 +1010,14 @@ static const tl_jhle k_hle[] = {
     M("java/io/File", "canWrite", "()Z", File_canWrite), M("java/io/File", "mkdirs", "()Z", File_mkdirs),
     M("java/io/File", "mkdir", "()Z", File_mkdir), M("java/io/File", "delete", "()Z", File_delete),
     M("java/io/File", "length", "()J", File_length), M("java/io/File", "toString", "()Ljava/lang/String;", File_toString),
+    M("java/io/File", "setReadOnly", "()Z", File_setReadOnly),
+    M("java/io/FileOutputStream", "<init>", "(Ljava/io/File;)V", FOS_init_file),
+    M("java/io/FileOutputStream", "<init>", "(Ljava/io/File;Z)V", FOS_init_file_append),
+    M("java/io/FileOutputStream", "<init>", "(Ljava/lang/String;)V", FOS_init_string),
+    M("java/io/FileOutputStream", "<init>", "(Ljava/lang/String;Z)V", FOS_init_string_append),
+    M("java/io/FileOutputStream", "write", "([BII)V", FOS_write_range),
+    M("java/io/FileOutputStream", "write", "([B)V", FOS_write_all),
+    M("java/io/FileOutputStream", "close", "()V", FOS_close),
     M("android/content/Context", "getPackageName", "()Ljava/lang/String;", Context_getPackageName),
     M("android/content/Context", "getPackageCodePath", "()Ljava/lang/String;", Context_getPackageCodePath),
     M("android/content/Context", "getPackageResourcePath", "()Ljava/lang/String;", Context_getPackageResourcePath),
