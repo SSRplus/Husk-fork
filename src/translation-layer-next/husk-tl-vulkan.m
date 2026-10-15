@@ -310,6 +310,7 @@ static int w_vkCreateSwapchainKHR(void *device, const void *ci, const void *allo
     return r;
 }
 
+void (*tl_vk_lost_hook)(void);   /* called once, from the thread that first sees VK_ERROR_DEVICE_LOST */
 typedef int (*pfn_acquire)(void *, uint64_t, uint64_t, uint64_t, uint64_t, uint32_t *);
 static int w_vkAcquireNextImageKHR(void *device, uint64_t swapchain, uint64_t timeout, uint64_t sem, uint64_t fence, uint32_t *index)
 {
@@ -317,6 +318,7 @@ static int w_vkAcquireNextImageKHR(void *device, uint64_t swapchain, uint64_t ti
     static atomic_int bad, seen;
     if (!real && V.lib) real = (pfn_acquire)dlsym(V.lib, "vkAcquireNextImageKHR");
     int r = real ? real(device, swapchain, timeout, sem, fence, index) : -3;
+    if (r == -4) { static atomic_int told; if (tl_vk_lost_hook && !atomic_exchange(&told, 1)) tl_vk_lost_hook(); }
     if (r != VK_SUCCESS && atomic_fetch_add(&bad, 1) < 20) tl_log_line("vulkan: vkAcquireNextImageKHR -> %d", r);
     else if (atomic_fetch_add(&seen, 1) < 2) tl_log_line("vulkan: vkAcquireNextImageKHR -> %d (image %u)", r, index ? *index : 0);
     return r;
@@ -610,16 +612,39 @@ static uint64_t heap_cap(void)
     return cap;
 }
 
+/* Every other Vulkan game (Unity, UE4...) is told the real heap too, and MoltenVK's is nearly all of the phone's RAM (1982 MB on a 3 GB iPhone 8 Plus, whose app
+ * limit is about 2 GB in total). Unity takes it as graphicsMemorySize and sizes texture streaming to it, then the GPU faults (Sea of Stars). So the heap a game sees is at
+ * most half of what iOS lets this app use (never under 768 MiB); TL_VK_HEAP_MB overrides it here as well. */
+static uint64_t heap_cap_any(void)
+{
+    if (dxvk_game()) return heap_cap();
+    static uint64_t cap;
+    if (cap) return cap;
+    const char *e = getenv("TL_VK_HEAP_MB");
+    if (e && atoi(e) > 0) cap = (uint64_t)atoi(e) << 20;
+    else {
+#if TARGET_OS_IOS
+        uint64_t avail = os_proc_available_memory();
+#else
+        uint64_t avail = 6ull << 30;
+#endif
+        cap = avail / 2;
+        if (cap < (768ull << 20)) cap = 768ull << 20;
+        cap &= ~((128ull << 20) - 1);
+    }
+    tl_log_line("vulkan: device-local heaps reported to the game as at most %llu MiB", (unsigned long long)(cap >> 20));
+    return cap;
+}
+
 static void cap_heaps(vk_mem_props *p)
 {
-    if (!dxvk_game()) return;
-    for (uint32_t i = 0; i < p->heapCount && i < 16; i++) if ((p->heaps[i].flags & 1) && p->heaps[i].size > heap_cap()) p->heaps[i].size = heap_cap();
+    uint64_t cap = heap_cap_any();
+    for (uint32_t i = 0; i < p->heapCount && i < 16; i++) if ((p->heaps[i].flags & 1) && p->heaps[i].size > cap) p->heaps[i].size = cap;
 }
 
 static void cap_chain(vk_mem_props2 *p)
 {
     cap_heaps(&p->p);
-    if (!dxvk_game()) return;
     for (vk_base *b = p->pNext; b; b = (vk_base *)b->pNext)
         if (b->sType == VK_STYPE_MEM_BUDGET) {
             vk_mem_budget *m = (vk_mem_budget *)b;

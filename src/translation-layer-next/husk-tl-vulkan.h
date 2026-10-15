@@ -30,6 +30,9 @@ bool tl_vk_available(void);
 
 unsigned long tl_vk_frames_presented(void);
 
+/* Set by the app: called once when the GPU device is lost (VK_ERROR_DEVICE_LOST), just before the game's own engine usually crashes on it. */
+extern void (*tl_vk_lost_hook)(void);
+
 #ifdef __cplusplus
 }
 #endif

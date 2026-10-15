@@ -18,6 +18,10 @@
 #include <errno.h>
 #include <execinfo.h>
 #include <TargetConditionals.h>
+#include <sys/sysctl.h>
+#if TARGET_OS_IPHONE
+#include <os/proc.h>
+#endif
 #include <stdbool.h>
 #include <fcntl.h>
 #include <limits.h>
@@ -110,7 +114,19 @@ static const char *synth_content(const char *path, char *buf, size_t n)
         return buf;
     }
     if (!strcmp(path, "/proc/meminfo")) {
-        snprintf(buf, n, "MemTotal:       11722000 kB\nMemFree:         3000000 kB\nMemAvailable:    5000000 kB\nBuffers:           10000 kB\nCached:          2000000 kB\nSwapTotal:             0 kB\nSwapFree:              0 kB\n");
+        /* This was a fixed 11.7 GB, a 12 GB phone's figure. Unity reads it as SystemInfo.systemMemorySize ("Memory = 11447mb" in the log of a 3 GB iPhone 8 Plus)
+         * and sizes its texture streaming and allocators to it, then outgrows what the phone's GPU can address (Sea of Stars: GPU Address Fault after ~1200 frames).
+         * So report the real RAM, and as available what iOS says this app may still use before it is killed. */
+        uint64_t mem = 0; size_t ml = sizeof(mem);
+        if (sysctlbyname("hw.memsize", &mem, &ml, NULL, 0) != 0 || !mem) mem = 3ull << 30;
+        uint64_t avail = 0;
+#if TARGET_OS_IPHONE
+        avail = (uint64_t)os_proc_available_memory();
+#endif
+        if (!avail || avail > mem) avail = mem / 4;
+        unsigned long long total_kb = mem / 1024, avail_kb = avail / 1024;
+        snprintf(buf, n, "MemTotal:       %llu kB\nMemFree:         %llu kB\nMemAvailable:    %llu kB\nBuffers:           10000 kB\nCached:          %llu kB\nSwapTotal:             0 kB\nSwapFree:              0 kB\n",
+                 total_kb, avail_kb, avail_kb, avail_kb / 8);
         return buf;
     }
     if (!strncmp(path, "/sys/devices/system/cpu/", 24) && (strstr(path, "/present") || strstr(path, "/possible") || strstr(path, "/online"))) {
