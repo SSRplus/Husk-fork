@@ -3,6 +3,7 @@
 #include "husk-tl-unity-app.h"
 
 #include <dlfcn.h>
+#include <errno.h>
 #include <fcntl.h>
 #include <pthread.h>
 #include <pthread/qos.h>
@@ -289,11 +290,11 @@ static const char *unity_vulkan_marker(void);
 /* ---- graphics ladder -------------------------------------------------------------------------------------------------------------------------------
  * A game that loses its GPU device takes the whole process down (Unity dereferences a null after VK_ERROR_DEVICE_LOST), so what the next start does has to be
  * decided from a file. One file per game, <data>/.husk-gfx-level, holds the level the next start uses:
- *   0  Vulkan through MoltenVK, plain descriptor bindings
- *   1  the same with MoltenVK's most conservative scheduling (serial submits, no prefilled command buffers, no fast math, callback semaphores)
- *   2  OpenGL ES through ANGLE (no Vulkan at all)
- * When the device is lost at level L the file is set to L+1 (2 at most), so opening the game again moves one step down the ladder, and it stays on the
- * level that stopped crashing. If OpenGL ES cannot start either (a game built for Vulkan only), the dialog hook sets the file back to 0. */
+ *   0  normal Unity API selection (OpenGL ES unless the manifest/preference requires Vulkan; plain descriptor bindings if Vulkan is selected)
+ *   1  conservative Vulkan through MoltenVK (serial submits, no prefilled command buffers, no fast math, callback semaphores)
+ *   2  force the OpenGL ES path through ANGLE (do not expose/configure Vulkan for this launch)
+ * When the device is lost at level L the file is set to L+1 (2 at most), so opening the game again moves down the ladder. If OpenGL ES cannot start either
+ * (for example, a game build that truly contains Vulkan only), the dialog hook sets the file back to 0 so the user is not stuck on an unusable fallback. */
 static const char *gfx_level_path(void)
 {
     static char p[1100];
@@ -312,13 +313,40 @@ static int gfx_level_read(void)
 {
     FILE *f = fopen(gfx_level_path(), "r");
     int l = -1;
-    if (f) { if (fscanf(f, "%d", &l) != 1) l = -1; fclose(f); }
-    return (l >= 0 && l <= 2) ? l : gfx_level_default();
+    if (f) {
+        if (fscanf(f, "%d", &l) != 1) l = -1;
+        fclose(f);
+        if (l >= 0 && l <= 2) {
+            tl_log_line("unity: loaded persisted graphics level %d from %s", l, gfx_level_path());
+            return l;
+        }
+        tl_log_line("unity: graphics-level state was invalid; using device default");
+    } else {
+        tl_log_line("unity: no readable graphics-level state at %s (errno %d); using device default", gfx_level_path(), errno);
+    }
+    return gfx_level_default();
 }
+/* Write to a sibling temporary file and rename it into place. A crash or force-quit must
+ * never leave a truncated state file that silently sends an A11 back to the crashing path. */
 static void gfx_level_write(int l)
 {
-    FILE *f = fopen(gfx_level_path(), "w");
-    if (f) { fprintf(f, "%d\n", l); fclose(f); }
+    char tmp[1150];
+    snprintf(tmp, sizeof(tmp), "%s.tmp.%d", gfx_level_path(), (int)getpid());
+    FILE *f = fopen(tmp, "w");
+    if (!f) {
+        tl_log_line("unity: FAILED to persist graphics level %d to %s (errno %d)", l, tmp, errno);
+        return;
+    }
+    int failed = fprintf(f, "%d\n", l) < 0 || fflush(f) != 0;
+    if (!failed && fsync(fileno(f)) != 0) failed = 1;
+    if (fclose(f) != 0) failed = 1;
+    if (failed || rename(tmp, gfx_level_path()) != 0) {
+        int e = errno;
+        unlink(tmp);
+        tl_log_line("unity: FAILED to persist graphics level %d to %s (errno %d)", l, gfx_level_path(), e);
+        return;
+    }
+    tl_log_line("unity: persisted graphics level %d to %s", l, gfx_level_path());
 }
 static int g_gfx_level;
 static void unity_vk_lost(void)
@@ -476,6 +504,11 @@ static void *launch_thread(void *arg)
                     setenv("MVK_CONFIG_PREFILL_METAL_COMMAND_BUFFERS", "0", 0);
                     setenv("MVK_CONFIG_FAST_MATH_ENABLED", "0", 0);
                     setenv("MVK_CONFIG_SEMAPHORE_SUPPORT_STYLE", "4", 0);   /* MVK_CONFIG_VK_SEMAPHORE_SUPPORT_STYLE_CALLBACK */
+                    /* Do not resume a Metal device after a real GPU page fault. The crash log
+                     * shows MoltenVK resuming after kIOGPUCommandBufferCallbackErrorPageFault,
+                     * then reporting DEVICE_LOST later. Stop issuing more work and persist the
+                     * GLES fallback as soon as Vulkan surfaces DEVICE_LOST. */
+                    setenv("MVK_CONFIG_RESUME_LOST_DEVICE", "0", 0);
                 }
                 tl_vk_lost_hook = unity_vk_lost;
                 tl_vk_configure(A.vulkan, NULL, 0);

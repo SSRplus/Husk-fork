@@ -310,7 +310,15 @@ static int w_vkCreateSwapchainKHR(void *device, const void *ci, const void *allo
     return r;
 }
 
-void (*tl_vk_lost_hook)(void);   /* called once, from the thread that first sees VK_ERROR_DEVICE_LOST */
+void (*tl_vk_lost_hook)(void);   /* called once when a Vulkan entry point reports VK_ERROR_DEVICE_LOST */
+static atomic_int g_vk_lost_notified;
+static void notify_vk_device_lost(const char *where, int result)
+{
+    if (result == -4 && !atomic_exchange(&g_vk_lost_notified, 1)) {
+        tl_log_line("vulkan: VK_ERROR_DEVICE_LOST observed in %s; recording fallback for the next launch", where);
+        if (tl_vk_lost_hook) tl_vk_lost_hook();
+    }
+}
 typedef int (*pfn_acquire)(void *, uint64_t, uint64_t, uint64_t, uint64_t, uint32_t *);
 static int w_vkAcquireNextImageKHR(void *device, uint64_t swapchain, uint64_t timeout, uint64_t sem, uint64_t fence, uint32_t *index)
 {
@@ -318,9 +326,25 @@ static int w_vkAcquireNextImageKHR(void *device, uint64_t swapchain, uint64_t ti
     static atomic_int bad, seen;
     if (!real && V.lib) real = (pfn_acquire)dlsym(V.lib, "vkAcquireNextImageKHR");
     int r = real ? real(device, swapchain, timeout, sem, fence, index) : -3;
-    if (r == -4) { static atomic_int told; if (tl_vk_lost_hook && !atomic_exchange(&told, 1)) tl_vk_lost_hook(); }
+    notify_vk_device_lost("vkAcquireNextImageKHR", r);
     if (r != VK_SUCCESS && atomic_fetch_add(&bad, 1) < 20) tl_log_line("vulkan: vkAcquireNextImageKHR -> %d", r);
     else if (atomic_fetch_add(&seen, 1) < 2) tl_log_line("vulkan: vkAcquireNextImageKHR -> %d (image %u)", r, index ? *index : 0);
+    return r;
+}
+
+/* Device loss is often first returned by vkQueueSubmit, before acquire/present notice it.
+ * Observe it here too so the fallback level is persisted as early as possible. */
+typedef int (*pfn_queue_submit)(void *, uint32_t, const void *, uint64_t);
+static int w_vkQueueSubmit(void *queue, uint32_t count, const void *submits, uint64_t fence)
+{
+    static pfn_queue_submit real;
+    if (!real && V.lib) real = (pfn_queue_submit)dlsym(V.lib, "vkQueueSubmit");
+    int r = real ? real(queue, count, submits, fence) : -3;
+    notify_vk_device_lost("vkQueueSubmit", r);
+    if (r != VK_SUCCESS) {
+        static atomic_int bad;
+        if (atomic_fetch_add(&bad, 1) < 20) tl_log_line("vulkan: vkQueueSubmit(%u) -> %d", count, r);
+    }
     return r;
 }
 
@@ -349,6 +373,7 @@ static int w_vkQueuePresentKHR(void *queue, const void *info)
         }
     }
     int r = real ? real(queue, info) : -3;
+    notify_vk_device_lost("vkQueuePresentKHR", r);
     { static atomic_int bad; if (r != VK_SUCCESS && atomic_fetch_add(&bad, 1) < 20) tl_log_line("vulkan: vkQueuePresentKHR #%lu -> %d", n, r); }
     { static int tr = -1; if (tr < 0) tr = getenv("TL_VK_TRACE") ? 1 : 0; if (tr && n <= 5) tl_log_line("vulkan: vkQueuePresentKHR #%lu -> %d", n, r); }
     return r;
@@ -731,6 +756,7 @@ static const struct { const char *name; void *fn; } k_over[] = {
     { "vkEnumerateInstanceExtensionProperties", w_vkEnumerateInstanceExtensionProperties },
     { "vkCreateAndroidSurfaceKHR", w_vkCreateAndroidSurfaceKHR },
     { "vkQueuePresentKHR", w_vkQueuePresentKHR },
+    { "vkQueueSubmit", w_vkQueueSubmit },
     { "vkCreateSwapchainKHR", w_vkCreateSwapchainKHR },
     { "vkAcquireNextImageKHR", w_vkAcquireNextImageKHR },
     { "vkGetPhysicalDeviceFeatures", w_vkGetPhysicalDeviceFeatures },
