@@ -413,9 +413,17 @@ static void *launch_thread(void *arg)
         /* Unity chooses between Vulkan and OpenGL ES from the list the game was built with; with no Vulkan here a game built for Vulkan alone stops with "Unable to
          * initialize the Unity Engine". The first start is OpenGL ES, as before (it is what the games that offer both have always run on); when Unity says it could not
          * start its graphics, the next start has Vulkan -- MoltenVK -- and when that fails too, the one after goes back to OpenGL ES. */
-        if (A.vulkan[0] && access(unity_vulkan_marker(), F_OK) == 0) {
-            tl_vk_configure(A.vulkan, NULL, 0);
-            tl_log_line("unity: Vulkan is on for this game (the last start could not initialise its graphics without it)");
+        if (A.vulkan[0]) {
+            int tl_manifest_vulkan_required(const char *apk);
+            const char *why = tl_manifest_vulkan_required(A.apk) ? "its manifest says it needs Vulkan"
+                            : access(unity_vulkan_marker(), F_OK) == 0 ? "the last start could not initialise its graphics without it" : NULL;
+            if (why) {
+                /* MoltenVK on this phone's GPU (Apple A11: argument buffers of the first tier) faulted on the descriptor sets Unity builds when they were bound through Metal
+                 * argument buffers ("GPU Address Fault ... PageFault", then a lost device after ~1100 frames of Sea of Stars): the plain bindings are what Unity's games use elsewhere. */
+                setenv("MVK_CONFIG_USE_METAL_ARGUMENT_BUFFERS", "0", 0);
+                tl_vk_configure(A.vulkan, NULL, 0);
+                tl_log_line("unity: Vulkan is on for this game (%s)", why);
+            }
         }
         tl_dialog_hook = unity_dialog_hook;
         tl_audio_install();

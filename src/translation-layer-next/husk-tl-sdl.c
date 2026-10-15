@@ -734,6 +734,42 @@ int tl_manifest_gles(const char *apk)
     return best;
 }
 
+/* Whether the manifest says the app needs Vulkan: <uses-feature android:name="android.hardware.vulkan.version" android:required="true">. Unity writes it when Vulkan is the only
+ * graphics API a game was built with (with OpenGL ES beside it the feature is optional or absent); such a game cannot start on OpenGL ES. */
+int tl_manifest_vulkan_required(const char *apk)
+{
+    tl_zip z; char err[160]; int need = 0;
+    if (!tl_zip_open(&z, apk, err, sizeof(err))) return 0;
+    const tl_zip_entry *e = tl_zip_find(&z, "AndroidManifest.xml");
+    const uint8_t *data; size_t len; bool owned = false;
+    if (e && tl_zip_data(&z, e, 8u << 20, &data, &len, &owned, err, sizeof(err)) && len > 8) {
+        const uint8_t *pool = NULL; size_t pool_size = 0;
+        for (size_t off = (size_t)(data[2] | (data[3] << 8)); off + 8 <= len; ) {
+            uint16_t type = (uint16_t)(data[off] | (data[off + 1] << 8)); uint32_t size = rd32(data + off + 4);
+            if (size < 8 || off + size > len) break;
+            if (type == 0x0001) { pool = data + off; pool_size = size; }
+            else if (type == 0x0102 && pool && off + 36 <= len) {
+                const uint8_t *el = data + off; char tag[24];
+                if (axml_string(pool, pool_size, rd32(el + 20), tag, sizeof(tag)) && !strcmp(tag, "uses-feature")) {
+                    uint16_t astart = (uint16_t)(el[24] | (el[25] << 8)), asize = (uint16_t)(el[26] | (el[27] << 8)), acount = (uint16_t)(el[28] | (el[29] << 8));
+                    bool is_vulkan = false, required = true;                                  /* android:required is true unless it says otherwise */
+                    for (unsigned i = 0; i < acount; i++) {
+                        const uint8_t *at = el + 16 + astart + (size_t)i * asize; char an[32], av[64] = "";
+                        if (at + 20 > data + len || !axml_string(pool, pool_size, rd32(at + 4), an, sizeof(an))) continue;
+                        if (!strcmp(an, "name") && rd32(at + 8) != 0xFFFFFFFFu && axml_string(pool, pool_size, rd32(at + 8), av, sizeof(av)) && !strcmp(av, "android.hardware.vulkan.version")) is_vulkan = true;
+                        if (!strcmp(an, "required")) required = rd32(at + 16) != 0;
+                    }
+                    if (is_vulkan && required) need = 1;
+                }
+            }
+            off += size;
+        }
+    }
+    if (owned) free((void *)data);
+    tl_zip_close(&z);
+    return need;
+}
+
 bool tl_sdl_start(const tl_ga_config *cfg, const char *activity_class)
 {
     S.cfg = *cfg;
