@@ -189,6 +189,13 @@ public class WebView extends AbsoluteLayout implements android.view.ViewTreeObse
                 WebResourceResponse r = intercept(target, "GET", true, additionalHttpHeaders);
                 Uri u = Uri.parse(target);
                 boolean virtual = r != null && !NETWORK_ONLY && virtualHost(u.getHost());
+                // A public host the app answers for (RPG Maker / Cordova wrappers use https://example.com/assets/www/...): if the real
+                // server answers the page with an HTTP error (example.com gives a 404 page, which is not a load error, so the
+                // fallback in huskEvent "E" never fires and the screen stays blank/black), the app's own copy is the page.
+                if (!virtual && r != null && !NETWORK_ONLY && r.getData() != null && !networkHas(target)) {
+                    Log.d(TAG, target + ": the network answers with an error status: the app serves it");
+                    virtual = true;
+                }
                 Log.d(TAG, target + (virtual ? ": the app serves this origin" : r != null ? ": the app also serves this public origin: from the network first" : ": from the network"));
                 synchronized (this) {
                     // An origin only the app has (localhost, *.androidplatform.net, ...) loads through the huskapp scheme. A public one
@@ -511,6 +518,30 @@ public class WebView extends AbsoluteLayout implements android.view.ViewTreeObse
         int end = start;
         while (end < url.length() && "/?#".indexOf(url.charAt(end)) < 0) end++;
         return end < url.length() && url.charAt(end) == '/' ? url : url.substring(0, end) + "/" + url.substring(end);
+    }
+    /** Whether the real server has this page: HEAD (then GET if HEAD is refused) answered 2xx/3xx. Any failure to ask counts as "has it",
+     *  so a flaky or offline network keeps the old network-first behaviour (and its fallback on a load error). */
+    private static boolean networkHas(String url) {
+        for (String method : new String[] { "HEAD", "GET" }) {
+            java.net.HttpURLConnection c = null;
+            try {
+                c = (java.net.HttpURLConnection) new java.net.URL(url).openConnection();
+                c.setRequestMethod(method);
+                c.setInstanceFollowRedirects(true);
+                c.setConnectTimeout(4000);
+                c.setReadTimeout(4000);
+                int code = c.getResponseCode();
+                if (code >= 200 && code < 400) return true;
+                if (code == 404 || code == 410) return false;
+                if (method.equals("GET")) return false;
+                // other 4xx/5xx on HEAD (405, 403, 501): ask again with GET
+            } catch (IOException | RuntimeException e) {
+                return true;
+            } finally {
+                if (c != null) try { c.disconnect(); } catch (RuntimeException ignored) {}
+            }
+        }
+        return true;
     }
     private static boolean isHttp(String url) { return url.regionMatches(true, 0, "http://", 0, 7) || url.regionMatches(true, 0, "https://", 0, 8); }
     private final Map<String, String> mNetworkFirst = new HashMap<>();   // public hosts the app also serves, until the network shows it has them
